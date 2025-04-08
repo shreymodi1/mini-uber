@@ -1,0 +1,36 @@
+# Core
+pip==23.1.2
+setuptools==67.6.1
+wheel==0.40.0
+
+# Web Frameworks
+Flask==2.2.5
+FastAPI==0.95.2
+uvicorn==0.22.0
+gunicorn==20.1.0
+
+# Database
+SQLAlchemy==2.0.18
+alembic==1.10.3
+
+# API
+requests==2.31.0
+httpx==0.24.1
+
+# Testing
+pytest==7.4.0
+pytest-cov==4.1.0
+
+# Documentation
+Sphinx==7.0.1
+
+# Utils
+python-dotenv==1.0.0
+pydantic==1.10.10
+
+# Security
+python-jose==3.3.0
+passlib==1.7.4
+
+# Task Queues
+Celery==5.3.1
