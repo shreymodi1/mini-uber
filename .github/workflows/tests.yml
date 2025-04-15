@@ -29,10 +29,7 @@ jobs:
         
         # Install test requirements with more tolerance for version issues
         if [ -f tests/requirements.txt ]; then
-          echo "Installing test requirements with version flexibility..."
-          # Create a modified requirements file without exact versions
-          grep -v "^#" tests/requirements.txt | sed 's/==.*$//' > tests/flexible_requirements.txt
-          pip install -r tests/flexible_requirements.txt
+          pip install -r tests/requirements.txt
         fi
         
         # Install main requirements
