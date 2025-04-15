@@ -53,19 +53,6 @@ jobs:
         python -m pytest -v > test_artifacts/test_results.txt 2>&1
         echo "status=$?" >> $GITHUB_ENV
 
-    - name: Generate coverage report
-      continue-on-error: true  # Don't fail the workflow if coverage report generation fails
-      run: |
-        python -m pytest --cov=./ --cov-report=xml
-        
-    - name: Upload coverage to Codecov
-      if: always()  # Always attempt to upload coverage, even if previous step failed
-      continue-on-error: true  # Don't fail the workflow if coverage upload fails
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
-        fail_ci_if_error: false
-
     - name: Collect repository files and analyze if tests failed
       if: env.status != '0'
       run: |
