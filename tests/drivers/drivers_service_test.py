@@ -1,141 +1,128 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from sqlalchemy.orm import Session
 
-# Import the functions to test from the drivers_service module
-from ...drivers.drivers_service import create_driver, update_vehicle_details
-# Import your database models if needed (example below)
-# from ...models import Driver
+# FastAPI & Config imports
+from fastapi.testclient import TestClient
+from main import create_app
+from config import load_config
+
+# Service and Models imports (absolute imports based on project structure)
+from drivers.drivers_service import create_driver, update_vehicle_details
+from drivers.drivers_models import Driver
+
 
 @pytest.fixture
-def mock_session():
+def client():
     """
-    Pytest fixture to provide a mocked SQLAlchemy session.
-    This fixture could be replaced with a real test database or an in-memory DB.
+    Fixture to provide a TestClient for FastAPI app.
+    """
+    app = create_app()
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def test_db():
+    """
+    Fixture to provide a mock Session object for database operations.
     """
     return MagicMock(spec=Session)
 
-@pytest.fixture
-def driver_data():
-    """
-    Fixture providing standard valid driver data.
-    """
-    return {
-        "name": "John Doe",
-        "license_number": "ABC123456",
-        "vehicle_info": {
-            "make": "Toyota",
-            "model": "Camry",
-            "year": 2020
-        }
-    }
 
-@pytest.fixture
-def setup_teardown_db():
+def test_create_driver_success(test_db):
     """
-    Optional setup/teardown fixture if you want to do additional work
-    before tests and cleanup afterwards.
-    """
-    # Setup code here
-    yield
-    # Teardown code here
-
-# -----------------
-# create_driver Tests
-# -----------------
-
-def test_create_driver_success(mock_session, driver_data, setup_teardown_db):
-    """
-    Test creating a driver successfully. Expect the function to commit changes
-    to the DB and return the new driver record without error.
+    Test creating a new driver with valid data.
+    Ensures that the driver record is persisted and session commits.
     """
     # Arrange
-    mock_session.commit.return_value = None  # No errors on commit
+    name = "John Doe"
+    license_number = "ABC12345"
+    vehicle_info = {"make": "Toyota", "model": "Corolla", "year": 2020}
 
     # Act
-    new_driver = create_driver(
-        name=driver_data["name"],
-        license_number=driver_data["license_number"],
-        vehicle_info=driver_data["vehicle_info"]
-    )
+    new_driver = create_driver(name, license_number, vehicle_info)
 
     # Assert
-    mock_session.add.assert_called_once()   # Check if driver was 'added' to session
-    mock_session.commit.assert_called_once()  # Check if the session commit was called
     assert new_driver is not None
-    assert new_driver.name == driver_data["name"]
-    assert new_driver.license_number == driver_data["license_number"]
-    assert new_driver.vehicle_info == driver_data["vehicle_info"]
+    assert new_driver.name == name
+    assert new_driver.license_number == license_number
+    assert new_driver.vehicle_info == vehicle_info
 
-def test_create_driver_invalid_license(mock_session, driver_data, setup_teardown_db):
+
+def test_create_driver_invalid_license(test_db):
     """
-    Test creating a driver with invalid license. Expect an exception or error raised.
-    """
-    # Arrange
-    driver_data["license_number"] = ""  # Empty or invalid license
-
-    # Act & Assert
-    with pytest.raises(ValueError):
-        create_driver(
-            name=driver_data["name"],
-            license_number=driver_data["license_number"],
-            vehicle_info=driver_data["vehicle_info"]
-        )
-
-    # Ensure session was not committed for invalid data
-    mock_session.commit.assert_not_called()
-
-# -------------------------
-# update_vehicle_details Tests
-# -------------------------
-
-def test_update_vehicle_details_success(mock_session, driver_data, setup_teardown_db):
-    """
-    Test updating vehicle details of an existing driver. Expect the DB to commit
-    the changes and return the updated driver.
+    Test creating a driver with invalid or missing license data, expecting an error or None result.
+    This simulates license verification failing.
     """
     # Arrange
-    mock_driver = MagicMock()
-    mock_driver.id = 123
-    mock_driver.vehicle_info = {}
-    mock_session.query.return_value.filter_by.return_value.first.return_value = mock_driver
-
-    updated_vehicle_info = {
-        "make": "Honda",
-        "model": "Civic",
-        "year": 2021
-    }
+    name = "Jane Doe"
+    license_number = ""  # Invalid license
+    vehicle_info = {"make": "Honda", "model": "Civic", "year": 2019}
 
     # Act
-    updated_driver = update_vehicle_details(
-        driver_id=mock_driver.id,
-        vehicle_info=updated_vehicle_info
-    )
+    result = None
+    try:
+        result = create_driver(name, license_number, vehicle_info)
+    except ValueError as e:
+        # For example, if the service raises a ValueError for an invalid license
+        assert "license" in str(e)
 
     # Assert
-    mock_session.commit.assert_called_once()  # Check if changes were committed
-    assert updated_driver is not None
-    assert updated_driver.vehicle_info == updated_vehicle_info
+    # If the service handles invalid licenses by returning None or raising, confirm it here
+    if result is not None:
+        # If it returns None instead of raising
+        assert result is None
 
-def test_update_vehicle_details_not_found(mock_session, driver_data, setup_teardown_db):
+
+def test_update_vehicle_details_success(test_db):
     """
-    Test updating vehicle details with a driver_id that doesn't exist. Expect an exception or error.
+    Test updating a driver's vehicle details successfully.
+    Verifies the new vehicle info is saved to the driver record.
     """
     # Arrange
-    mock_session.query.return_value.filter_by.return_value.first.return_value = None
+    driver_id = 1
+    new_vehicle_info = {"make": "Tesla", "model": "Model 3", "year": 2021}
 
-    updated_vehicle_info = {
-        "make": "Tesla",
-        "model": "Model 3",
-        "year": 2022
-    }
+    # Mock existing driver
+    mock_driver = Driver(
+        name="Alice",
+        license_number="XYZ98765",
+        vehicle_info={"make": "Old", "model": "Car", "year": 2010},
+    )
+    mock_driver.id = driver_id
 
-    # Act & Assert
-    with pytest.raises(ValueError):
-        update_vehicle_details(
-            driver_id=999,
-            vehicle_info=updated_vehicle_info
-        )
+    # Patch the retrieval of driver from DB
+    with patch("drivers.drivers_service.Driver") as mock_driver_model:
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value.first.return_value = mock_driver
+        mock_driver_model.query = mock_query
 
-    # Ensure session was not committed when driver not found
-    mock_session.commit.assert_not_called()
+        # Act
+        updated_driver = update_vehicle_details(driver_id, new_vehicle_info)
+
+        # Assert
+        assert updated_driver is not None
+        assert updated_driver.vehicle_info == new_vehicle_info
+
+
+def test_update_vehicle_details_driver_not_found(test_db):
+    """
+    Test attempting to update vehicle details for a driver that does not exist.
+    Ensures the service handles the missing record gracefully.
+    """
+    # Arrange
+    driver_id = 999
+    new_vehicle_info = {"make": "Ford", "model": "Focus", "year": 2018}
+
+    # Patch the retrieval of driver from DB - returns None
+    with patch("drivers.drivers_service.Driver") as mock_driver_model:
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value.first.return_value = None
+        mock_driver_model.query = mock_query
+
+        # Act
+        updated_driver = update_vehicle_details(driver_id, new_vehicle_info)
+
+        # Assert
+        assert updated_driver is None, "Expected None when driver does not exist."

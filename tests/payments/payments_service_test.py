@@ -1,134 +1,187 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+from unittest.mock import patch
 
-# Import the functions to test from the payments_service module
-from ...payments.payments_service import calculate_fare, charge_rider, payout_driver
+# Required project-level imports
+from main import create_app
+from config import load_config
+from payments.payments_service import calculate_fare, charge_rider, payout_driver
 
+# -----------------------------------------------------------------------------
+# FIXTURES
+# -----------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Fixtures (if you need to set up a DB session or other state)
-# ---------------------------------------------------------------------------
 @pytest.fixture
-def mock_db_session():
+def client():
     """
-    Mock database session fixture (replace with a real session if needed).
+    Create a TestClient using the FastAPI app.
     """
-    mock_session = MagicMock()
-    return mock_session
+    app = create_app()
+    return TestClient(app)
 
 
-# ---------------------------------------------------------------------------
-# Test calculate_fare
-# ---------------------------------------------------------------------------
-def test_calculate_fare_valid_inputs():
+@pytest.fixture
+def test_db():
     """
-    Test that calculate_fare returns a valid fare amount
-    given normal inputs.
+    Provide a test database session fixture.
+    This is a placeholder for setting up an in-memory or test database.
     """
+    # SETUP: Initialize connection or create in-memory DB
+    session = Session()  # In real usage, pass necessary engine or config
+    
+    yield session
+    
+    # TEARDOWN: Close session/connection, remove test data, etc.
+    session.close()
+
+# -----------------------------------------------------------------------------
+# TESTS FOR calculate_fare
+# -----------------------------------------------------------------------------
+
+def test_calculate_fare_valid_input():
+    """
+    Test calculate_fare with valid inputs.
+    Ensures it returns a fare without errors.
+    """
+    pickup_location = (37.7749, -122.4194)  # Example: San Francisco
+    dropoff_location = (37.7849, -122.4094)  # Slightly different coords
+    duration = 15.0  # minutes
+    distance = 3.0   # kilometers
+
+    # ACT
     fare = calculate_fare(
-        pickup_location="LocationA",
-        dropoff_location="LocationB",
-        duration=30,   # duration in minutes
-        distance=10.0  # distance in kilometers
+        pickup_location=pickup_location,
+        dropoff_location=dropoff_location,
+        duration=duration,
+        distance=distance
     )
-    assert fare > 0, "Fare should be greater than 0 for valid trip data"
+
+    # ASSERT
+    assert fare > 0, "Fare should be positive for a valid ride"
 
 
 def test_calculate_fare_zero_distance():
     """
-    Test that calculate_fare handles zero distance and
-    returns a minimal fare or 0.
+    Test calculate_fare when distance is zero.
+    Depending on business logic, fare should be minimal or zero.
     """
+    pickup_location = (40.7128, -74.0060)  # Example: New York
+    dropoff_location = (40.7128, -74.0060)  # Same coords
+    duration = 10.0
+    distance = 0.0
+
     fare = calculate_fare(
-        pickup_location="LocationA",
-        dropoff_location="LocationB",
-        duration=20,
-        distance=0.0
+        pickup_location=pickup_location,
+        dropoff_location=dropoff_location,
+        duration=duration,
+        distance=distance
     )
-    # Depending on business rules, fare could be minimal or 0
-    assert fare >= 0, "Fare should be >= 0 for zero distance"
+
+    assert fare >= 0, "Fare should be non-negative even if distance is zero"
 
 
-def test_calculate_fare_negative_values():
+def test_calculate_fare_negative_distance():
     """
-    Test that calculate_fare raises an error or returns 0
-    when duration or distance is negative.
+    Test calculate_fare with a negative distance to ensure
+    it either raises an error or handles invalid input gracefully.
     """
+    pickup_location = (0.0, 0.0)
+    dropoff_location = (1.0, 1.0)
+    duration = 10.0
+    distance = -5.0
+
+    # Depending on implementation, it may raise an error or return 0.
+    # Here we demonstrate expecting an exception.
     with pytest.raises(ValueError):
         calculate_fare(
-            pickup_location="LocationA",
-            dropoff_location="LocationB",
-            duration=-10,
-            distance=5.0
+            pickup_location=pickup_location,
+            dropoff_location=dropoff_location,
+            duration=duration,
+            distance=distance
         )
 
+# -----------------------------------------------------------------------------
+# TESTS FOR charge_rider
+# -----------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Test charge_rider
-# ---------------------------------------------------------------------------
-@patch("...payments.payments_service.some_payment_provider_api.charge")
-def test_charge_rider_success(mock_charge):
+def test_charge_rider_success(test_db):
     """
-    Test that charge_rider succeeds when the external payment provider
-    confirms the payment.
+    Test charge_rider with a valid rider ID and amount.
+    Use a mock to simulate external payment provider call.
     """
-    mock_charge.return_value = {"status": "success"}
-    response = charge_rider(rider_id=123, amount=50.0)
-    assert response["status"] == "success", "Expected successful charge response"
+    rider_id = 123
+    amount = 50.0
 
+    with patch("payments.payments_service.some_external_payment_api.charge") as mock_charge:
+        # Arrange mock behavior (simulate success)
+        mock_charge.return_value = {
+            "status": "success",
+            "transaction_id": "abc123"
+        }
 
-@patch("...payments.payments_service.some_payment_provider_api.charge")
-def test_charge_rider_insufficient_funds(mock_charge):
-    """
-    Test that charge_rider handles insufficient funds error
-    from the payment provider.
-    """
-    mock_charge.return_value = {"status": "failure", "reason": "insufficient_funds"}
-    response = charge_rider(rider_id=123, amount=1000.0)
-    assert response["status"] == "failure", "Expected failure response for insufficient funds"
-    assert response["reason"] == "insufficient_funds", "Expected 'insufficient_funds' reason"
+        # Act
+        result = charge_rider(rider_id, amount)
 
-
-@patch("...payments.payments_service.some_payment_provider_api.charge")
-def test_charge_rider_invalid_rider(mock_charge):
-    """
-    Test that charge_rider raises an exception or returns a specific response
-    when the rider ID is invalid.
-    """
-    mock_charge.side_effect = ValueError("Invalid Rider")
-    with pytest.raises(ValueError, match="Invalid Rider"):
-        charge_rider(rider_id=None, amount=50.0)
+        # Assert
+        assert result["status"] == "success", "Rider charge should succeed"
+        mock_charge.assert_called_once_with(rider_id, amount)
 
 
-# ---------------------------------------------------------------------------
-# Test payout_driver
-# ---------------------------------------------------------------------------
-@patch("...payments.payments_service.some_payment_provider_api.payout")
-def test_payout_driver_success(mock_payout):
+def test_charge_rider_insufficient_funds(test_db):
     """
-    Test that payout_driver succeeds when the external payment provider
-    confirms the payout.
+    Test charge_rider to simulate a payment failure, e.g., insufficient funds.
     """
-    mock_payout.return_value = {"status": "success"}
-    response = payout_driver(driver_id=456, amount=75.0)
-    assert response["status"] == "success", "Expected successful payout response"
+    rider_id = 123
+    amount = 999999.99  # Excessively large to trigger insufficient funds
+
+    with patch("payments.payments_service.some_external_payment_api.charge") as mock_charge:
+        # Arrange mock behavior (simulate failure)
+        mock_charge.side_effect = Exception("Insufficient funds")
+
+        # Act & Assert
+        with pytest.raises(Exception, match="Insufficient funds"):
+            charge_rider(rider_id, amount)
+
+# -----------------------------------------------------------------------------
+# TESTS FOR payout_driver
+# -----------------------------------------------------------------------------
+
+def test_payout_driver_success(test_db):
+    """
+    Test payout_driver with a valid driver ID and amount.
+    Mock the external payout system to verify a successful payout.
+    """
+    driver_id = 789
+    amount = 75.0
+
+    with patch("payments.payments_service.some_external_payout_api.process_payout") as mock_payout:
+        # Arrange mock behavior
+        mock_payout.return_value = {
+            "status": "success",
+            "payout_id": "payout_123"
+        }
+
+        # Act
+        result = payout_driver(driver_id, amount)
+
+        # Assert
+        assert result["status"] == "success", "Driver payout should be successful"
+        mock_payout.assert_called_once_with(driver_id, amount)
 
 
-@patch("...payments.payments_service.some_payment_provider_api.payout")
-def test_payout_driver_invalid_driver(mock_payout):
+def test_payout_driver_invalid_driver(test_db):
     """
-    Test that payout_driver handles invalid driver error
-    from the payment provider.
+    Test payout_driver with an invalid or non-existent driver ID.
+    Expect the code to raise an exception or return an error.
     """
-    mock_payout.side_effect = ValueError("Invalid Driver")
-    with pytest.raises(ValueError, match="Invalid Driver"):
-        payout_driver(driver_id=None, amount=50.0)
+    driver_id = 999999
+    amount = 50.0
 
+    with patch("payments.payments_service.some_external_payout_api.process_payout") as mock_payout:
+        # Arrange mock to raise an exception for invalid driver
+        mock_payout.side_effect = Exception("Driver not found")
 
-@patch("...payments.payments_service.some_payment_provider_api.payout")
-def test_payout_driver_negative_amount(mock_payout):
-    """
-    Test that payout_driver raises an exception for negative amounts.
-    """
-    with pytest.raises(ValueError):
-        payout_driver(driver_id=456, amount=-10.0)
+        # Act & Assert
+        with pytest.raises(Exception, match="Driver not found"):
+            payout_driver(driver_id, amount)

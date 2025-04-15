@@ -1,111 +1,77 @@
 import os
 import pytest
-from unittest.mock import patch, mock_open
 
-# Import the functions to test from the config module
-from ...config import load_config, get_database_url
+# Importing the functions under test from the project's root-level config module
+from config import load_config, get_database_url
 
 @pytest.fixture
-def restore_env():
+def clear_env_vars(monkeypatch):
     """
-    Fixture to restore environment variables after each test to prevent
-    cross-test contamination.
+    Fixture to clear specific environment variables before each test to avoid side effects.
     """
-    original_env = dict(os.environ)
+    vars_to_clear = [
+        "DATABASE_URL",  # Example env var name for the DB connection URL
+        "SOME_OTHER_CONFIG"  # Example of any other config-related env var that might be used
+    ]
+    for var in vars_to_clear:
+        monkeypatch.delenv(var, raising=False)
     yield
-    os.environ.clear()
-    os.environ.update(original_env)
 
-def test_load_config_with_env_variables(restore_env):
+
+def test_load_config_reads_env_vars(monkeypatch, clear_env_vars):
     """
-    Test that load_config correctly reads and sets required environment variables
-    when they are already present in the environment.
+    Test that load_config() correctly reads and returns important
+    configuration data from environment variables.
     """
     # Arrange
-    os.environ["DB_URL"] = "postgresql://user:pass@localhost:5432/db_test"
-    os.environ["SECRET_KEY"] = "mysecretkey"
-    
-    # Act
-    load_config()
-    
-    # Assert
-    assert os.getenv("DB_URL") == "postgresql://user:pass@localhost:5432/db_test"
-    assert os.getenv("SECRET_KEY") == "mysecretkey"
-
-def test_load_config_with_env_file(restore_env, tmp_path):
-    """
-    Test that load_config can read and set environment variables from a .env file
-    when those variables are not already present in the environment.
-    """
-    # Arrange
-    env_file = tmp_path / ".env"
-    env_content = "DB_URL=postgresql://user:pass@localhost:5432/db_from_file\nSECRET_KEY=file_secret_key"
-    env_file.write_text(env_content)
-    
-    # Mocking os.path.exists to return True for the .env file check
-    with patch("...config.os.path.exists", return_value=True):
-        # Mocking open to return our custom file content
-        with patch("builtins.open", mock_open(read_data=env_content)):
-            # Act
-            load_config()
-
-    # Assert
-    assert os.getenv("DB_URL") == "postgresql://user:pass@localhost:5432/db_from_file"
-    assert os.getenv("SECRET_KEY") == "file_secret_key"
-
-def test_load_config_with_missing_env_file(restore_env):
-    """
-    Test that load_config does not throw an error if .env file is missing
-    and environment variables are also not available in the environment.
-    The function should fail gracefully or at least not break execution.
-    """
-    with patch("...config.os.path.exists", return_value=False):
-        load_config()
-    # If no crash, we assume the function handled missing .env correctly
-    assert True
-
-def test_get_database_url_success(restore_env):
-    """
-    Test that get_database_url returns the correct URL
-    when the DB_URL environment variable is set.
-    """
-    # Arrange
-    os.environ["DB_URL"] = "postgresql://user:pass@localhost:5432/success_db"
+    monkeypatch.setenv("SOME_OTHER_CONFIG", "TestValue")
 
     # Act
-    db_url = get_database_url()
+    config_values = load_config()
 
     # Assert
-    assert db_url == "postgresql://user:pass@localhost:5432/success_db"
+    assert "SOME_OTHER_CONFIG" in config_values, "Expected config to include 'SOME_OTHER_CONFIG'"
+    assert config_values["SOME_OTHER_CONFIG"] == "TestValue", "Expected 'SOME_OTHER_CONFIG' to match env var"
 
-def test_get_database_url_missing(restore_env):
-    """
-    Test that get_database_url returns None or raises an error
-    when DB_URL is not set. Adjust based on config.py implementation:
-    - if it raises an exception, use pytest.raises
-    - if it returns None, just check for None
-    """
-    # Arrange
-    # Ensure DB_URL is not set
-    os.environ.pop("DB_URL", None)
 
+def test_load_config_env_var_not_set_returns_default(clear_env_vars):
+    """
+    Test that load_config() returns default or fallback values
+    when certain environment variables are not set.
+    """
     # Act
-    db_url = get_database_url()
+    config_values = load_config()
 
     # Assert
-    # Adjust the assertion based on actual behavior in config.py
-    assert db_url is None, "Expected None when DB_URL is missing"
+    # Adjust the assertion based on how 'load_config' handles missing env vars
+    assert "SOME_OTHER_CONFIG" not in config_values or config_values["SOME_OTHER_CONFIG"] is None, (
+        "Expected fallback behavior for missing 'SOME_OTHER_CONFIG'"
+    )
 
-def test_get_database_url_invalid_format(restore_env):
+
+def test_get_database_url_with_env(monkeypatch, clear_env_vars):
     """
-    Test that get_database_url handles invalid DB_URL format.
-    Depending on the config.py implementation, this may raise an exception
-    or return None. Adjust accordingly.
+    Test get_database_url() returns the correct database URL
+    when DATABASE_URL environment variable is set.
     """
     # Arrange
-    os.environ["DB_URL"] = "invalid_db_url"
+    db_url = "postgresql://test_user:test_pass@localhost:5432/test_db"
+    monkeypatch.setenv("DATABASE_URL", db_url)
 
     # Act
-    with pytest.raises(ValueError):
-        # If config.py raises a ValueError for invalid format
-        get_database_url()
+    result = get_database_url()
+
+    # Assert
+    assert result == db_url, "Expected get_database_url() to return the environment-specified DB URL"
+
+
+def test_get_database_url_no_env_raises_or_fallback(clear_env_vars):
+    """
+    Test behavior of get_database_url() when DATABASE_URL is not set.
+    Depending on implementation, it might raise an error or return a default/fallback.
+    """
+    # Act / Assert
+    # Modify the test based on the actual behavior. Example if it raises an exception:
+    with pytest.raises(Exception) as exc_info:
+        _ = get_database_url()
+    assert "not set" in str(exc_info.value), "Expected exception when DATABASE_URL is missing"

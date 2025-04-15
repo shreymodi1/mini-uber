@@ -1,176 +1,175 @@
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
-from sqlalchemy.orm import Session
+from unittest.mock import patch
 
-# -------------------------------------------------------------------------
-# Relative import from the drivers_router.py file
-# which contains the FastAPI router we want to test
-# -------------------------------------------------------------------------
-from ...drivers.drivers_router import router
+from main import create_app
+from config import load_config
 
-# -------------------------------------------------------------------------
-# Example model imports if needed (adjust as per actual usage)
-# -------------------------------------------------------------------------
-from ...models import Driver, Vehicle  # Adjust to actual models
-
-
-@pytest.fixture
+@pytest.fixture(scope="module")
 def client():
     """
-    Pytest fixture to create and provide a TestClient for our FastAPI app.
-    Includes the 'router' for driver-related endpoints.
+    Fixture to create a TestClient instance for testing the FastAPI app.
+    Loads configuration before creating the app if needed.
     """
-    app = FastAPI()
-    app.include_router(router, prefix="/drivers", tags=["drivers"])
+    _ = load_config()  # Load any necessary configuration
+    app = create_app()  # Create the FastAPI application instance
     return TestClient(app)
 
 
-@pytest.fixture
-def mock_db_session():
+@pytest.mark.describe("Drivers Router - create_driver_endpoint")
+class TestCreateDriverEndpoint:
     """
-    Fixture to provide a mock of the SQLAlchemy Session for database operations.
-    Replace or extend as needed to simulate DB interactions.
+    Test suite for the create_driver_endpoint in 'drivers.drivers_router'.
+    Verifies driver creation success and various error scenarios.
     """
-    session = MagicMock(spec=Session)
-    yield session
+
+    @patch("drivers.drivers_router.create_driver")
+    def test_create_driver_success(self, mock_create_driver, client):
+        """
+        Test successful creation of a driver with valid input.
+        Mocks the 'create_driver' service to return a simulated driver record.
+        """
+        # Arrange
+        mock_create_driver.return_value = {
+            "driver_id": 1,
+            "name": "John Doe",
+            "license_number": "XYZ123",
+            "vehicle_info": "Toyota"
+        }
+        payload = {
+            "name": "John Doe",
+            "license_number": "XYZ123",
+            "vehicle_info": "Toyota"
+        }
+
+        # Act
+        response = client.post("/drivers", json=payload)
+
+        # Assert
+        assert response.status_code == 201, "Expected 201 Created for successful driver creation"
+        assert response.json().get("driver_id") == 1
+        assert response.json().get("name") == "John Doe"
+        assert response.json().get("license_number") == "XYZ123"
+
+    def test_create_driver_missing_fields(self, client):
+        """
+        Test creating a driver with missing required fields.
+        Expects a 400 Bad Request response.
+        """
+        # Arrange
+        payload = {
+            # 'name' is missing
+            "license_number": "XYZ123",
+            "vehicle_info": "Toyota"
+        }
+
+        # Act
+        response = client.post("/drivers", json=payload)
+
+        # Assert
+        assert response.status_code == 400, "Expected 400 when required fields are missing"
+
+    def test_create_driver_invalid_data(self, client):
+        """
+        Test creating a driver with invalid data type or structure.
+        Expects a 422 Unprocessable Entity or similar client error response.
+        """
+        # Arrange
+        payload = {
+            "name": 12345,  # Invalid data type for name
+            "license_number": None,  # Possibly invalid
+            "vehicle_info": "Toyota"
+        }
+
+        # Act
+        response = client.post("/drivers", json=payload)
+
+        # Assert
+        # Depending on your validation, it could be 400 or 422.
+        assert response.status_code in [400, 422], "Expected an error when invalid data is provided"
 
 
-# -------------------------------------------------------------------------
-# Tests for create_driver_endpoint
-# -------------------------------------------------------------------------
-def test_create_driver_success(client, mock_db_session):
+@pytest.mark.describe("Drivers Router - update_vehicle_details_endpoint")
+class TestUpdateVehicleDetailsEndpoint:
     """
-    Test creating a new driver successfully.
-    Mocks database operations and checks for a 201 status code.
+    Test suite for the update_vehicle_details_endpoint in 'drivers.drivers_router'.
+    Verifies successful updates and error scenarios for driver vehicle info.
     """
-    # Example request data for creating a new driver
-    request_data = {
-        "name": "John Doe",
-        "license_number": "ABC12345",
-        "phone": "555-1234"
-    }
 
-    # Patch any DB calls inside create_driver_endpoint (if applicable)
-    with patch("...drivers.drivers_router.get_db", return_value=mock_db_session):
-        response = client.post("/drivers/create_driver", json=request_data)
-        assert response.status_code == 201
-        assert response.json().get("message") == "Driver created successfully"
-        # Additional assertions as needed (e.g., output data, DB calls)
+    @patch("drivers.drivers_router.update_vehicle_details")
+    def test_update_vehicle_details_success(self, mock_update_vehicle_details, client):
+        """
+        Test updating vehicle details for an existing driver.
+        Mocks the 'update_vehicle_details' service to simulate a successful update.
+        """
+        # Arrange
+        mock_update_vehicle_details.return_value = {
+            "driver_id": 1,
+            "name": "John Doe",
+            "license_number": "XYZ123",
+            "vehicle_info": "Honda Accord 2022"
+        }
+        driver_id = 1
+        payload = {
+            "vehicle_info": "Honda Accord 2022"
+        }
 
+        # Act
+        response = client.put(f"/drivers/{driver_id}/vehicle", json=payload)
 
-def test_create_driver_missing_fields(client, mock_db_session):
-    """
-    Test creating a driver when required fields are missing.
-    Expects a 422 or 400 status code due to validation.
-    """
-    # Missing license_number to simulate validation error
-    invalid_request_data = {
-        "name": "Jane Doe",
-        "phone": "555-6789"
-    }
+        # Assert
+        assert response.status_code == 200, "Expected 200 OK for successful vehicle update"
+        assert response.json().get("vehicle_info") == "Honda Accord 2022"
 
-    with patch("...drivers.drivers_router.get_db", return_value=mock_db_session):
-        response = client.post("/drivers/create_driver", json=invalid_request_data)
-        # Status could be 422 or 400 depending on pydantic or custom validation
-        assert response.status_code in [400, 422]
-        # Check error details, if provided
-        assert "detail" in response.json()
+    @patch("drivers.drivers_router.update_vehicle_details")
+    def test_update_vehicle_details_driver_not_found(self, mock_update_vehicle_details, client):
+        """
+        Test updating vehicle details with a non-existent driver ID.
+        Expects a 404 Not Found response.
+        """
+        # Arrange
+        mock_update_vehicle_details.side_effect = ValueError("Driver not found")
+        driver_id = 9999
+        payload = {
+            "vehicle_info": "Updated Vehicle Info"
+        }
 
+        # Act
+        response = client.put(f"/drivers/{driver_id}/vehicle", json=payload)
 
-def test_create_driver_internal_error(client, mock_db_session):
-    """
-    Test creating a driver when the database operation fails internally.
-    Expects a 500 status code or appropriate error response.
-    """
-    valid_request_data = {
-        "name": "Mark Smith",
-        "license_number": "XYZ98765",
-        "phone": "555-9999"
-    }
+        # Assert
+        assert response.status_code == 404, "Expected 404 when updating vehicle info for a non-existent driver"
 
-    # Simulate an exception from the DB layer
-    mock_db_session.add.side_effect = Exception("DB Error")
+    def test_update_vehicle_details_missing_fields(self, client):
+        """
+        Test updating vehicle details with missing fields in the payload.
+        Expects a 400 Bad Request response.
+        """
+        # Arrange
+        driver_id = 1
+        payload = {
+            # Missing 'vehicle_info'
+        }
 
-    with patch("...drivers.drivers_router.get_db", return_value=mock_db_session):
-        response = client.post("/drivers/create_driver", json=valid_request_data)
-        assert response.status_code == 500
-        assert response.json().get("detail") == "Internal server error"
+        # Act
+        response = client.put(f"/drivers/{driver_id}/vehicle", json=payload)
 
+        # Assert
+        assert response.status_code == 400, "Expected 400 when required fields are missing"
 
-# -------------------------------------------------------------------------
-# Tests for update_vehicle_details_endpoint
-# -------------------------------------------------------------------------
-def test_update_vehicle_details_success(client, mock_db_session):
-    """
-    Test updating vehicle details for a driver successfully.
-    Expects a 200 status code and a success response.
-    """
-    driver_id = 1
-    request_data = {
-        "make": "Toyota",
-        "model": "Corolla",
-        "year": 2020,
-        "license_plate": "ABC-123"
-    }
+    def test_update_vehicle_details_invalid_data(self, client):
+        """
+        Test updating vehicle details with an invalid payload structure.
+        Expects a 422 Unprocessable Entity or a similar error response.
+        """
+        # Arrange
+        driver_id = 1
+        payload = {
+            "vehicle_info": 1234  # Invalid data type
+        }
 
-    # Mock the driver and vehicle retrieval to simulate existing records
-    mock_driver_instance = MagicMock(spec=Driver)
-    mock_driver_instance.id = driver_id
-    mock_vehicle_instance = MagicMock(spec=Vehicle)
-    mock_driver_instance.vehicle = mock_vehicle_instance
+        # Act
+        response = client.put(f"/drivers/{driver_id}/vehicle", json=payload)
 
-    mock_db_session.query.return_value.filter_by.return_value.first.return_value = mock_driver_instance
-
-    with patch("...drivers.drivers_router.get_db", return_value=mock_db_session):
-        response = client.put(f"/drivers/{driver_id}/update_vehicle_details", json=request_data)
-        assert response.status_code == 200
-        assert response.json().get("message") == "Vehicle details updated successfully"
-
-
-def test_update_vehicle_details_not_found(client, mock_db_session):
-    """
-    Test updating vehicle details for a driver that does not exist.
-    Expects a 404 status code when the driver is not found.
-    """
-    driver_id = 9999
-    request_data = {
-        "make": "Honda",
-        "model": "Civic",
-        "year": 2021,
-        "license_plate": "XYZ-789"
-    }
-
-    # Simulate no driver found
-    mock_db_session.query.return_value.filter_by.return_value.first.return_value = None
-
-    with patch("...drivers.drivers_router.get_db", return_value=mock_db_session):
-        response = client.put(f"/drivers/{driver_id}/update_vehicle_details", json=request_data)
-        assert response.status_code == 404
-        assert response.json().get("detail") == "Driver not found"
-
-
-def test_update_vehicle_details_db_error(client, mock_db_session):
-    """
-    Test updating vehicle details when a DB error occurs.
-    Expects a 500 status code or appropriate error response.
-    """
-    driver_id = 2
-    request_data = {
-        "make": "Ford",
-        "model": "Focus",
-        "year": 2019,
-        "license_plate": "FOC-321"
-    }
-
-    # Simulate a DB error during update
-    mock_driver_instance = MagicMock(spec=Driver)
-    mock_driver_instance.id = driver_id
-    mock_db_session.query.return_value.filter_by.return_value.first.return_value = mock_driver_instance
-    mock_db_session.commit.side_effect = Exception("DB Commit Error")
-
-    with patch("...drivers.drivers_router.get_db", return_value=mock_db_session):
-        response = client.put(f"/drivers/{driver_id}/update_vehicle_details", json=request_data)
-        assert response.status_code == 500
-        assert response.json().get("detail") == "Internal server error"
+        # Assert
+        assert response.status_code in [400, 422], "Expected an error when invalid data is provided"

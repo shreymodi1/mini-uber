@@ -1,202 +1,213 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 from sqlalchemy.orm import Session
 
-# Always import the functions under test from the service module
-from ...ratings.ratings_service import (
+# Import the functions to test from the service module
+from ratings.ratings_service import (
     rate_driver,
     rate_rider,
     get_rider_rating,
     get_driver_rating
 )
 
-# Import any models as needed (this is illustrative; adjust based on your actual models)
-from ...models import Ride, Rating, Driver, Rider
-
-
 @pytest.fixture
-def mock_db_session():
+def mock_session():
     """
-    Pytest fixture that provides a mock Session object.
-    This fixture can be used in tests to avoid real database interactions.
+    Provides a mock SQLAlchemy session object to simulate database interactions.
     """
     return MagicMock(spec=Session)
 
+@pytest.mark.describe("Test rate_driver function")
+class TestRateDriver:
+    @pytest.mark.it("Should successfully rate a driver and update the overall rating")
+    @patch("ratings.ratings_service.log_info")
+    def test_rate_driver_success(self, mock_log_info, mock_session):
+        """
+        Test the case where a ride_id, rating, and review are valid.
+        Ensures the function calls the session to persist data and logs an info message.
+        """
+        # Arrange
+        ride_id = 123
+        rating = 5
+        review = "Excellent driver!"
+        # Mock any DB calls or rating calculation as needed
+        mock_session.query.return_value.filter_by.return_value.first.return_value = MagicMock()
 
-###############################
-# rate_driver Tests
-###############################
+        # Act
+        rate_driver(ride_id, rating, review)
 
-@pytest.mark.parametrize("rating_value, review_text", [
-    (5, "Excellent driver!"),
-    (3, "Average service")
-])
-def test_rate_driver_success(mock_db_session, rating_value, review_text):
-    """
-    Test that a valid driver rating is successfully saved and the driver's overall rating is updated.
-    """
-    # Arrange: Mock a ride and driver record
-    mock_ride = Ride(id=1, driver_id=10, rider_id=20)
-    mock_driver = Driver(id=10, overall_rating=4.0)  # hypothetical initial overall rating
-    # Set up mock query results
-    mock_db_session.query().filter_by().first.side_effect = [mock_ride, mock_driver]
+        # Assert
+        mock_session.query.assert_called_once()
+        mock_session.add.assert_called()  # Should add a new rating record
+        mock_session.commit.assert_called_once()  # Should commit the changes
+        mock_log_info.assert_called_once_with(f"Driver rated successfully for ride {ride_id}")
 
-    # Act: Rate the driver
-    rate_driver(ride_id=1, rating=rating_value, review=review_text, db=mock_db_session)
+    @pytest.mark.it("Should handle invalid rating value (out of range)")
+    @patch("ratings.ratings_service.log_error")
+    def test_rate_driver_invalid_rating(self, mock_log_error, mock_session):
+        """
+        Test behavior when the rating provided is invalid (e.g., below 1 or above 5).
+        The service may log an error or raise an exception. Adjust test as per implementation.
+        """
+        # Arrange
+        ride_id = 123
+        invalid_rating = 6
+        review = "This rating shouldn't work"
 
-    # Assert: Ensure a new Rating record is added and driver's rating is updated
-    assert mock_db_session.add.called, "Expected a Rating object to be added to the session."
-    assert mock_db_session.commit.called, "Expected the session to commit after adding a rating."
-    # Verify that the driver's overall rating was recomputed and updated (implementation-specific check)
-    update_call = mock_db_session.add.call_args[0][0]
-    assert isinstance(update_call, Rating), "Should create a Rating instance."
-    assert update_call.rating == rating_value, "Rating should match the provided value."
-    # Check that the driver's rating was updated (this might be part of the business logic to recalc average)
-    # Adjust the following check based on how your code actually updates driver rating
-    mock_db_session.query().filter_by().first.assert_called()
+        # Act & Assert
+        with pytest.raises(ValueError):
+            rate_driver(ride_id, invalid_rating, review)
 
+        mock_log_error.assert_called_once()
 
-def test_rate_driver_invalid_ride(mock_db_session):
-    """
-    Test that rating a driver fails if the ride does not exist.
-    """
-    # Arrange: The ride query should return None to simulate invalid ride
-    mock_db_session.query().filter_by().first.return_value = None
+    @pytest.mark.it("Should handle scenario where ride_id is not found in the database")
+    @patch("ratings.ratings_service.log_error")
+    def test_rate_driver_ride_not_found(self, mock_log_error, mock_session):
+        """
+        Test when the provided ride_id does not exist in the DB.
+        The service should handle gracefully, possibly logging an error.
+        """
+        # Arrange
+        ride_id = 999
+        rating = 4
+        review = "No ride found"
+        mock_session.query.return_value.filter_by.return_value.first.return_value = None
 
-    # Act & Assert: An exception or specific handling might occur if ride doesn't exist
-    with pytest.raises(ValueError, match="Ride not found"):
-        rate_driver(ride_id=99, rating=5, review="No ride here", db=mock_db_session)
-
-
-@pytest.mark.parametrize("invalid_rating", [-1, 6])
-def test_rate_driver_out_of_range(mock_db_session, invalid_rating):
-    """
-    Test that rating a driver fails if the rating is out of allowed range (usually 1-5).
-    """
-    # Arrange: Return a valid ride but attempt to save an invalid rating
-    mock_ride = Ride(id=1, driver_id=10, rider_id=20)
-    mock_db_session.query().filter_by().first.side_effect = [mock_ride, Driver(id=10)]
-
-    # Act & Assert: Expect an exception or validation error
-    with pytest.raises(ValueError, match="Invalid rating"):
-        rate_driver(ride_id=1, rating=invalid_rating, review="Out of range", db=mock_db_session)
-
-
-###############################
-# rate_rider Tests
-###############################
-
-@pytest.mark.parametrize("rating_value, review_text", [
-    (5, "Great passenger"),
-    (2, "Could be more polite")
-])
-def test_rate_rider_success(mock_db_session, rating_value, review_text):
-    """
-    Test that a valid rider rating is successfully saved and the rider's overall rating is updated.
-    """
-    # Arrange: Mock a ride and rider record
-    mock_ride = Ride(id=1, driver_id=10, rider_id=20)
-    mock_rider = Rider(id=20, overall_rating=4.5)  # hypothetical initial overall rating
-    # Set up mock query results
-    mock_db_session.query().filter_by().first.side_effect = [mock_ride, mock_rider]
-
-    # Act: Rate the rider
-    rate_rider(ride_id=1, rating=rating_value, review=review_text, db=mock_db_session)
-
-    # Assert: Check that the rating was added and committed
-    assert mock_db_session.add.called, "Expected a Rating object to be added to the session."
-    assert mock_db_session.commit.called, "Expected the session to commit after adding a rating."
-    new_rating = mock_db_session.add.call_args[0][0]
-    assert new_rating.rating == rating_value, "Rating should match the provided value."
+        # Act & Assert
+        with pytest.raises(LookupError):
+            rate_driver(ride_id, rating, review)
+        mock_log_error.assert_called_once()
 
 
-def test_rate_rider_invalid_ride(mock_db_session):
-    """
-    Test that rating a rider fails if the ride cannot be found.
-    """
-    # Arrange: Return None for the ride
-    mock_db_session.query().filter_by().first.return_value = None
+@pytest.mark.describe("Test rate_rider function")
+class TestRateRider:
+    @pytest.mark.it("Should successfully rate a rider and update the overall rating")
+    @patch("ratings.ratings_service.log_info")
+    def test_rate_rider_success(self, mock_log_info, mock_session):
+        """
+        Test the case where a ride_id, rating, and review are valid.
+        Ensures the function calls the session to persist data and logs an info message.
+        """
+        # Arrange
+        ride_id = 456
+        rating = 4
+        review = "Polite rider"
+        mock_session.query.return_value.filter_by.return_value.first.return_value = MagicMock()
 
-    # Act & Assert: Expect an exception due to invalid ride
-    with pytest.raises(ValueError, match="Ride not found"):
-        rate_rider(ride_id=99, rating=5, review="Invalid ride", db=mock_db_session)
+        # Act
+        rate_rider(ride_id, rating, review)
 
+        # Assert
+        mock_session.add.assert_called()  # Should add a new rider rating record
+        mock_session.commit.assert_called_once()
+        mock_log_info.assert_called_once_with(f"Rider rated successfully for ride {ride_id}")
 
-@pytest.mark.parametrize("invalid_rating", [0, 10])
-def test_rate_rider_out_of_range(mock_db_session, invalid_rating):
-    """
-    Test that rating a rider fails if the rating is out of allowed range (e.g., 1-5).
-    """
-    # Arrange: Return a valid ride but use an invalid rating
-    mock_ride = Ride(id=1, driver_id=10, rider_id=20)
-    mock_db_session.query().filter_by().first.side_effect = [mock_ride, Rider(id=20)]
+    @pytest.mark.it("Should handle invalid rating value (out of range)")
+    @patch("ratings.ratings_service.log_error")
+    def test_rate_rider_invalid_rating(self, mock_log_error, mock_session):
+        """
+        Test behavior when the rating provided is invalid (e.g., below 1 or above 5).
+        The service may log an error or raise an exception. Adjust test as per implementation.
+        """
+        # Arrange
+        ride_id = 456
+        invalid_rating = 0  # zero is invalid if 1..5 range is expected
+        review = "Invalid rating"
 
-    # Act & Assert: Expect an exception due to invalid rating
-    with pytest.raises(ValueError, match="Invalid rating"):
-        rate_rider(ride_id=1, rating=invalid_rating, review="Out of range", db=mock_db_session)
+        # Act & Assert
+        with pytest.raises(ValueError):
+            rate_rider(ride_id, invalid_rating, review)
 
+        mock_log_error.assert_called_once()
 
-###############################
-# get_rider_rating Tests
-###############################
+    @pytest.mark.it("Should handle scenario where ride_id is not found in the database")
+    @patch("ratings.ratings_service.log_error")
+    def test_rate_rider_ride_not_found(self, mock_log_error, mock_session):
+        """
+        Test when the provided ride_id does not exist in the DB.
+        The service should handle gracefully, possibly logging an error.
+        """
+        # Arrange
+        ride_id = 9999
+        rating = 5
+        review = "No ride found"
+        mock_session.query.return_value.filter_by.return_value.first.return_value = None
 
-def test_get_rider_rating_success(mock_db_session):
-    """
-    Test that retrieving an existing rider's overall rating succeeds.
-    """
-    # Arrange: Mock a rider record with a known overall rating
-    mock_rider = Rider(id=20, overall_rating=4.2)
-    mock_db_session.query().filter_by().first.return_value = mock_rider
-
-    # Act
-    rating = get_rider_rating(rider_id=20, db=mock_db_session)
-
-    # Assert
-    assert rating == 4.2, "Should return the correct overall rating for the rider."
-
-
-def test_get_rider_rating_not_found(mock_db_session):
-    """
-    Test that None or an appropriate exception is returned if rider does not exist.
-    """
-    # Arrange: No matching rider
-    mock_db_session.query().filter_by().first.return_value = None
-
-    # Act
-    rating = get_rider_rating(rider_id=999, db=mock_db_session)
-
-    # Assert
-    assert rating is None, "Expected None when rider is not found."
-
-
-###############################
-# get_driver_rating Tests
-###############################
-
-def test_get_driver_rating_success(mock_db_session):
-    """
-    Test that retrieving an existing driver's overall rating succeeds.
-    """
-    # Arrange: Mock a driver record
-    mock_driver = Driver(id=10, overall_rating=3.8)
-    mock_db_session.query().filter_by().first.return_value = mock_driver
-
-    # Act
-    rating = get_driver_rating(driver_id=10, db=mock_db_session)
-
-    # Assert
-    assert rating == 3.8, "Should return the correct overall rating for the driver."
+        # Act & Assert
+        with pytest.raises(LookupError):
+            rate_rider(ride_id, rating, review)
+        mock_log_error.assert_called_once()
 
 
-def test_get_driver_rating_not_found(mock_db_session):
-    """
-    Test that None or an appropriate response is returned if the driver does not exist.
-    """
-    # Arrange: No matching driver
-    mock_db_session.query().filter_by().first.return_value = None
+@pytest.mark.describe("Test get_rider_rating function")
+class TestGetRiderRating:
+    @pytest.mark.it("Should return the correct overall rating for a rider")
+    def test_get_rider_rating_success(self, mock_session):
+        """
+        Test retrieving the overall rider rating when the rider exists and has ratings.
+        """
+        # Arrange
+        rider_id = 123
+        expected_rating = 4.5
+        mock_session.query.return_value.filter_by.return_value.first.return_value = MagicMock(
+            overall_rating=expected_rating
+        )
 
-    # Act
-    rating = get_driver_rating(driver_id=999, db=mock_db_session)
+        # Act
+        result = get_rider_rating(rider_id)
 
-    # Assert
-    assert rating is None, "Expected None when driver is not found."
+        # Assert
+        assert result == expected_rating, "Should return the rider's overall rating"
+
+    @pytest.mark.it("Should return None or a default value if the rider has no ratings")
+    def test_get_rider_rating_no_ratings(self, mock_session):
+        """
+        If the rider has no ratings or is not found, the function could return None or 0.0.
+        Adjust assertion based on how the function is implemented.
+        """
+        # Arrange
+        rider_id = 999
+        mock_session.query.return_value.filter_by.return_value.first.return_value = None
+
+        # Act
+        result = get_rider_rating(rider_id)
+
+        # Assert
+        assert result is None, "Should return None when rider has no ratings"
+
+
+@pytest.mark.describe("Test get_driver_rating function")
+class TestGetDriverRating:
+    @pytest.mark.it("Should return the correct overall rating for a driver")
+    def test_get_driver_rating_success(self, mock_session):
+        """
+        Test retrieving the overall driver rating when the driver exists and has ratings.
+        """
+        # Arrange
+        driver_id = 456
+        expected_rating = 4.0
+        mock_session.query.return_value.filter_by.return_value.first.return_value = MagicMock(
+            overall_rating=expected_rating
+        )
+
+        # Act
+        result = get_driver_rating(driver_id)
+
+        # Assert
+        assert result == expected_rating, "Should return the driver's overall rating"
+
+    @pytest.mark.it("Should return None or a default value if the driver has no ratings")
+    def test_get_driver_rating_no_ratings(self, mock_session):
+        """
+        If the driver has no ratings or is not found, the function could return None or 0.0.
+        Adjust assertion based on how the function is implemented.
+        """
+        # Arrange
+        driver_id = 9999
+        mock_session.query.return_value.filter_by.return_value.first.return_value = None
+
+        # Act
+        result = get_driver_rating(driver_id)
+
+        # Assert
+        assert result is None, "Should return None when driver has no ratings"
