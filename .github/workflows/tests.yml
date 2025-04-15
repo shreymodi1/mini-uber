@@ -27,10 +27,8 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         
-        # Install test requirements with more tolerance for version issues
-        if [ -f tests/requirements.txt ]; then
-          pip install -r tests/requirements.txt
-        fi
+        # Install pytest and compatible packages first
+        pip install pytest==7.3.1 pytest-cov==4.1.0 pytest-asyncio==0.21.0
         
         # Install main requirements
         if [ -f requirements.txt ]; then
@@ -38,9 +36,14 @@ jobs:
           pip install -r requirements.txt
         fi
         
-        # Ensure test packages are installed
-        echo "Installing test frameworks..."
-        pip install pytest pytest-cov httpx fastapi
+        # Install test requirements (except pytest which we've installed with specific version)
+        if [ -f tests/requirements.txt ]; then
+          echo "Installing test requirements (excluding pytest)..."
+          grep -v "pytest" tests/requirements.txt | xargs -r pip install
+        fi
+        
+        # Ensure other necessary packages are installed
+        pip install httpx fastapi
         
     - name: Run tests and capture results
       id: test-run
@@ -51,10 +54,13 @@ jobs:
         echo "status=$?" >> $GITHUB_ENV
 
     - name: Generate coverage report
+      continue-on-error: true  # Don't fail the workflow if coverage report generation fails
       run: |
-        pytest --cov=./ --cov-report=xml
+        python -m pytest --cov=./ --cov-report=xml
         
     - name: Upload coverage to Codecov
+      if: always()  # Always attempt to upload coverage, even if previous step failed
+      continue-on-error: true  # Don't fail the workflow if coverage upload fails
       uses: codecov/codecov-action@v3
       with:
         file: ./coverage.xml
@@ -135,9 +141,6 @@ jobs:
         echo "AI Analysis of Test Failures:"
         cat test_artifacts/ai_feedback.md
         
-        # Save feedback as a GitHub step output
-        echo "::set-output name=feedback::$(cat test_artifacts/ai_feedback.md | sed 's/\n/%0A/g' | sed 's/\r/%0D/g')"
-    
     - name: Comment on PR with feedback 
       if: env.status != '0' && github.event_name == 'pull_request'
       run: |
