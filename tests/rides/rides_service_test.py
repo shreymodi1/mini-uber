@@ -1,189 +1,198 @@
 import pytest
 from unittest.mock import patch, MagicMock
+from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-# Import the functions to be tested from the rides_service file
-from ...rides.rides_service import create_ride, assign_driver_to_ride, update_ride_status
+# Import from project root based on provided structure
+from config import load_config
+from main import create_app
+from rides.rides_service import create_ride, assign_driver_to_ride, update_ride_status
+from rides.rides_models import Ride
 
-# Import models if needed
-from ...models import Ride, Driver
+
+@pytest.fixture(scope="module")
+def client():
+    """
+    Fixture to initialize the FastAPI application and return a test client.
+    """
+    app = create_app()
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 @pytest.fixture
-def mock_db_session():
+def test_db():
     """
-    Provides a mocked database session for testing.
-    Replace MagicMock() with an actual test session if you want to integrate with the real DB.
+    Fixture to provide a mocked database session or in-memory DB for testing.
     """
+    # You would typically set up an in-memory SQLite DB or a mock Session here.
+    # For demonstration, we'll return a MagicMock to stand in for a Session.
     return MagicMock(spec=Session)
 
 
-@pytest.fixture
-def sample_ride_data():
+def test_create_ride_success(test_db):
     """
-    Provides sample data for creating a ride.
-    """
-    return {
-        "rider_id": 1,
-        "pickup_location": "Location A",
-        "dropoff_location": "Location B"
-    }
-
-
-@pytest.fixture
-def sample_ride_in_db():
-    """
-    Provides a mock Ride object that might represent an existing ride in the database.
-    """
-    mock_ride = MagicMock(spec=Ride)
-    mock_ride.id = 123
-    mock_ride.rider_id = 1
-    mock_ride.pickup_location = "Location A"
-    mock_ride.dropoff_location = "Location B"
-    mock_ride.status = "created"
-    return mock_ride
-
-
-@pytest.mark.parametrize("pickup, dropoff", [
-    # Test with valid pickup and dropoff
-    ("Location A", "Location B"),
-    # Test with minimal necessary locations
-    ("", "Exact Spot"),
-])
-def test_create_ride_success(mock_db_session, pickup, dropoff):
-    """
-    Test that create_ride successfully creates a ride when called with valid data.
-    The function should insert a new ride record into the database.
+    Test that create_ride successfully creates a new ride record when valid inputs are provided.
     """
     # Arrange
-    rider_id = 1
+    rider_id = 123
+    pickup_location = {"lat": 40.7128, "lng": -74.0060}
+    dropoff_location = {"lat": 40.73061, "lng": -73.935242}
+
+    # Mock the database call to create and save a new ride
+    test_db.add = MagicMock()
+    test_db.commit = MagicMock()
 
     # Act
-    new_ride = create_ride(rider_id, pickup, dropoff, db_session=mock_db_session)
+    new_ride = create_ride(rider_id, pickup_location, dropoff_location)
 
     # Assert
-    # Ensure a ride object is returned
-    assert new_ride is not None
-    # Check that the ride has the correct attributes
+    assert isinstance(new_ride, Ride)
     assert new_ride.rider_id == rider_id
-    assert new_ride.pickup_location == pickup
-    assert new_ride.dropoff_location == dropoff
-    # Verify that the DB session's add/commit was called
-    mock_db_session.add.assert_called_once()
-    mock_db_session.commit.assert_called_once()
+    assert new_ride.pickup_location == pickup_location
+    assert new_ride.dropoff_location == dropoff_location
+    test_db.add.assert_called_once()
+    test_db.commit.assert_called_once()
 
 
-def test_create_ride_missing_location(mock_db_session):
+def test_create_ride_failure_invalid_rider(test_db):
     """
-    Test that create_ride raises an exception when required locations are missing.
+    Test that create_ride raises an exception or handles errors when the rider_id is invalid.
+    For demonstration, we assume an invalid rider_id < 0 triggers a ValueError.
     """
     # Arrange
-    rider_id = 1
-    invalid_pickup = None
-    invalid_dropoff = ""
+    invalid_rider_id = -1
+    pickup_location = {"lat": 40.7128, "lng": -74.0060}
+    dropoff_location = {"lat": 40.73061, "lng": -73.935242}
 
     # Act & Assert
     with pytest.raises(ValueError):
-        create_ride(rider_id, invalid_pickup, "Valid Dropoff", db_session=mock_db_session)
-
-    with pytest.raises(ValueError):
-        create_ride(rider_id, "Valid Pickup", invalid_dropoff, db_session=mock_db_session)
+        create_ride(invalid_rider_id, pickup_location, dropoff_location)
 
 
-@patch("...rides.rides_service.get_available_driver")
-def test_assign_driver_to_ride_success(mock_get_driver, mock_db_session, sample_ride_in_db):
+@patch("rides.rides_service.fetch_rider")
+def test_create_ride_failure_rider_not_found(mock_fetch_rider, test_db):
     """
-    Test that assign_driver_to_ride assigns an available driver to an existing ride.
-    It should update the ride's status and driver_id.
+    Test that create_ride handles the scenario where the rider cannot be found in the database.
     """
     # Arrange
-    mock_driver = MagicMock(spec=Driver)
-    mock_driver.id = 10
-    mock_get_driver.return_value = mock_driver
+    mock_fetch_rider.return_value = None  # Rider not found
+    rider_id = 999
+    pickup_location = {"lat": 40.7128, "lng": -74.0060}
+    dropoff_location = {"lat": 40.73061, "lng": -73.935242}
 
-    # Mock DB session behavior for getting a ride
-    mock_db_session.query.return_value.get.return_value = sample_ride_in_db
+    # Act & Assert
+    with pytest.raises(RuntimeError, match="Rider not found"):
+        create_ride(rider_id, pickup_location, dropoff_location)
 
-    # Act
-    updated_ride = assign_driver_to_ride(sample_ride_in_db.id, db_session=mock_db_session)
+
+def test_assign_driver_to_ride_success(test_db):
+    """
+    Test that assign_driver_to_ride assigns an available driver to an existing ride successfully.
+    """
+    # Arrange
+    ride_id = 10
+    mock_ride = MagicMock(spec=Ride)
+    mock_ride.id = ride_id
+    mock_ride.driver_id = None
+    test_db.query.return_value.filter_by.return_value.first.return_value = mock_ride
+
+    # Mock a simple "available driver" finding mechanism
+    available_driver_id = 101
+
+    def mock_find_driver(*args, **kwargs):
+        return available_driver_id
+
+    # Patch the part of the service that finds an available driver
+    with patch("rides.rides_service.assign_driver_to_ride.find_available_driver", new=mock_find_driver):
+        # Act
+        updated_ride = assign_driver_to_ride(ride_id)
 
     # Assert
-    assert updated_ride.driver_id == mock_driver.id
-    assert updated_ride.status == "assigned"
-    mock_db_session.commit.assert_called_once()
+    assert updated_ride.driver_id == available_driver_id
+    test_db.commit.assert_called_once()
 
 
-@patch("...rides.rides_service.get_available_driver")
-def test_assign_driver_to_ride_no_drivers(mock_get_driver, mock_db_session, sample_ride_in_db):
+@patch("rides.rides_service.assign_driver_to_ride.find_available_driver", return_value=None)
+def test_assign_driver_to_ride_no_available_driver(mock_find_driver, test_db):
     """
-    Test that assign_driver_to_ride handles the scenario where no drivers are available.
-    It should raise an exception or return None (depending on your logic).
+    Test that assign_driver_to_ride handles the case where no drivers are available.
     """
     # Arrange
-    mock_get_driver.return_value = None
-    mock_db_session.query.return_value.get.return_value = sample_ride_in_db
-
-    # Act & Assert
-    with pytest.raises(RuntimeError):
-        assign_driver_to_ride(sample_ride_in_db.id, db_session=mock_db_session)
-
-
-def test_assign_driver_to_ride_ride_not_found(mock_db_session):
-    """
-    Test that assign_driver_to_ride raises an exception if the ride does not exist.
-    """
-    # Arrange
-    non_existent_ride_id = 999
-    mock_db_session.query.return_value.get.return_value = None
-
-    # Act & Assert
-    with pytest.raises(ValueError):
-        assign_driver_to_ride(non_existent_ride_id, db_session=mock_db_session)
-
-
-@pytest.mark.parametrize("new_status", [
-    "in_progress",
-    "completed",
-    "canceled"
-])
-def test_update_ride_status_success(mock_db_session, sample_ride_in_db, new_status):
-    """
-    Test that update_ride_status successfully updates a ride's status
-    when called with a valid status.
-    """
-    # Arrange
-    mock_db_session.query.return_value.get.return_value = sample_ride_in_db
+    ride_id = 11
+    mock_ride = MagicMock(spec=Ride)
+    mock_ride.id = ride_id
+    mock_ride.driver_id = None
+    test_db.query.return_value.filter_by.return_value.first.return_value = mock_ride
 
     # Act
-    updated_ride = update_ride_status(sample_ride_in_db.id, new_status, db_session=mock_db_session)
+    updated_ride = assign_driver_to_ride(ride_id)
 
     # Assert
-    assert updated_ride.status == new_status
-    mock_db_session.commit.assert_called_once()
+    # If no driver is assigned, we expect driver_id to remain None.
+    assert updated_ride.driver_id is None
 
 
-def test_update_ride_status_invalid_status(mock_db_session, sample_ride_in_db):
+def test_assign_driver_to_ride_ride_not_found(test_db):
     """
-    Test that update_ride_status raises an exception if an invalid status is provided.
-    """
-    # Arrange
-    mock_db_session.query.return_value.get.return_value = sample_ride_in_db
-    invalid_status = "not_a_valid_status"
-
-    # Act & Assert
-    with pytest.raises(ValueError):
-        update_ride_status(sample_ride_in_db.id, invalid_status, db_session=mock_db_session)
-
-
-def test_update_ride_status_not_found(mock_db_session):
-    """
-    Test that update_ride_status raises an exception if the ride does not exist.
+    Test that assign_driver_to_ride handles the case when the ride does not exist.
     """
     # Arrange
     ride_id = 999
-    new_status = "in_progress"
-    mock_db_session.query.return_value.get.return_value = None
+    test_db.query.return_value.filter_by.return_value.first.return_value = None  # Ride not found
 
     # Act & Assert
-    with pytest.raises(ValueError):
-        update_ride_status(ride_id, new_status, db_session=mock_db_session)
+    with pytest.raises(RuntimeError, match="Ride not found"):
+        assign_driver_to_ride(ride_id)
+
+
+def test_update_ride_status_success(test_db):
+    """
+    Test that update_ride_status successfully updates the ride status when provided valid ride_id and status.
+    """
+    # Arrange
+    ride_id = 20
+    new_status = "in-progress"
+    mock_ride = MagicMock(spec=Ride)
+    mock_ride.id = ride_id
+    mock_ride.status = "requested"
+    test_db.query.return_value.filter_by.return_value.first.return_value = mock_ride
+
+    # Act
+    updated_ride = update_ride_status(ride_id, new_status)
+
+    # Assert
+    assert updated_ride.status == new_status
+    test_db.commit.assert_called_once()
+
+
+def test_update_ride_status_invalid_ride(test_db):
+    """
+    Test that update_ride_status raises an error when the ride does not exist in the database.
+    """
+    # Arrange
+    ride_id = 9999
+    new_status = "canceled"
+    test_db.query.return_value.filter_by.return_value.first.return_value = None
+
+    # Act & Assert
+    with pytest.raises(RuntimeError, match="Ride not found"):
+        update_ride_status(ride_id, new_status)
+
+
+def test_update_ride_status_invalid_status(test_db):
+    """
+    Test that update_ride_status handles invalid status strings appropriately.
+    For demonstration, we assume an invalid status triggers a ValueError.
+    """
+    # Arrange
+    ride_id = 30
+    invalid_status = "invalid-status"
+    mock_ride = MagicMock(spec=Ride)
+    mock_ride.id = ride_id
+    mock_ride.status = "requested"
+    test_db.query.return_value.filter_by.return_value.first.return_value = mock_ride
+
+    # Act & Assert
+    with pytest.raises(ValueError, match="Invalid ride status"):
+        update_ride_status(ride_id, invalid_status)

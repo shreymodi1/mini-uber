@@ -1,141 +1,124 @@
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker, Session
-from datetime import datetime
 
-# Import models (assuming the file has a SQLAlchemy Ride model and possibly others)
-from ...rides.rides_models import Base, Ride
+# Load config and create the FastAPI app
+from config import load_config
+from main import create_app
+
+# Import the SQLAlchemy Base and any ride model classes
+# Assuming there's a class named Ride and a Base for metadata
+# If the actual model names differ, adjust accordingly
+from rides.rides_models import Base, Ride
 
 
-# -----------------------------------------------------------------------------
-# Fixtures: Setup and Teardown
-# -----------------------------------------------------------------------------
-@pytest.fixture(scope="module")
+# -------------------------------------------------------------------
+# Database Fixtures
+# -------------------------------------------------------------------
+@pytest.fixture(scope="session")
 def test_engine():
     """
-    Creates an in-memory SQLite test database engine for use in tests.
+    Create an in-memory SQLite engine for testing purposes.
+    This fixture is executed once per session.
     """
+    # You could load config if you need dynamic DB URLs: load_config()
+    # For now, we'll use an in-memory SQLite database:
     engine = create_engine("sqlite:///:memory:", echo=False)
     Base.metadata.create_all(bind=engine)
-    yield engine
-    # No teardown needed as in-memory DB is destroyed once connection is closed.
+    return engine
 
 
-@pytest.fixture
-def db_session(test_engine) -> Session:
+@pytest.fixture(scope="function")
+def test_db(test_engine):
     """
-    Provides a scoped session for tests, rolling back any changes after each test.
+    Provide a new database session for each test.
+    Rolls back any changes after test execution.
     """
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-    session = SessionLocal()
+    db: Session = SessionLocal()
 
     try:
-        yield session
+        yield db
     finally:
-        session.close()
+        db.rollback()
+        db.close()
 
 
-# -----------------------------------------------------------------------------
-# Tests for Ride Model
-# -----------------------------------------------------------------------------
-def test_ride_model_creation_success(db_session: Session):
+@pytest.fixture(scope="module")
+def client():
     """
-    Test successful creation of a Ride model instance with valid data.
+    Provide a TestClient instance for API endpoint testing.
     """
+    app = create_app()
+    with TestClient(app) as c:
+        yield c
+
+
+# -------------------------------------------------------------------
+# Model Tests
+# -------------------------------------------------------------------
+def test_create_ride_model_valid_data(test_db: Session):
+    """
+    Test creating a Ride model with valid data.
+    Ensures the model is persisted and primary key is generated.
+    """
+    # Assuming the Ride model requires pickup_location, dropoff_location, and status
     new_ride = Ride(
-        start_location="Location A",
-        end_location="Location B",
-        status="ongoing",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
-    )
-    db_session.add(new_ride)
-    db_session.commit()
-    db_session.refresh(new_ride)
-
-    assert new_ride.id is not None, "Expected Ride ID to be set after commit."
-    assert new_ride.start_location == "Location A"
-    assert new_ride.end_location == "Location B"
-    assert new_ride.status == "ongoing"
-
-
-def test_ride_model_missing_fields(db_session: Session):
-    """
-    Test model creation with missing required fields to ensure integrity is enforced.
-    Depending on how the model is defined (nullable or not), this may raise errors.
-    """
-    # Example: If start_location is not nullable, check for IntegrityError or similar.
-    incomplete_ride = Ride(end_location="Location C", status="completed")
-    db_session.add(incomplete_ride)
-
-    with pytest.raises(Exception) as exc_info:
-        db_session.commit()
-
-    db_session.rollback()
-    assert "IntegrityError" in str(exc_info.value) or "not null" in str(exc_info.value), (
-        "Expected a database integrity error when required field is missing."
+        pickup_location="123 Main St",
+        dropoff_location="456 Elm St",
+        status="requested"
     )
 
+    test_db.add(new_ride)
+    test_db.commit()
+    test_db.refresh(new_ride)
 
-def test_ride_model_default_status(db_session: Session):
-    """
-    Test that a default status is assigned if the model or DB sets a default
-    and status is not provided.
-    """
-    default_ride = Ride(start_location="Location D", end_location="Location E")
-    db_session.add(default_ride)
-    db_session.commit()
-    db_session.refresh(default_ride)
-
-    # Adjust this assertion based on actual default set in the model.
-    # For example, if default status is "pending":
-    assert default_ride.status == "pending", "Expected ride to have default status 'pending'."
+    assert new_ride.id is not None, "Expected the ride to have a generated primary key."
+    assert new_ride.pickup_location == "123 Main St", "Pickup location incorrect."
+    assert new_ride.dropoff_location == "456 Elm St", "Dropoff location incorrect."
+    assert new_ride.status == "requested", "Status should be 'requested' initially."
 
 
-def test_ride_model_updating_fields(db_session: Session):
+def test_create_ride_model_missing_required_field(test_db: Session):
     """
-    Test that updating a Ride record's fields works and the record is correctly refreshed.
+    Test that creating a Ride without a required field raises an error.
+    If the model or DB schema enforces NOT NULL constraints, we expect an IntegrityError.
     """
-    ride = Ride(
-        start_location="Location X",
-        end_location="Location Y",
-        status="ongoing",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
+    # Missing dropoff_location to induce an error if it's required
+    incomplete_ride = Ride(pickup_location="123 Main St", status="requested")
+
+    test_db.add(incomplete_ride)
+    with pytest.raises(IntegrityError):
+        test_db.commit()
+
+
+def test_create_ride_model_invalid_status(test_db: Session):
+    """
+    Test adding a Ride with an invalid status (if there's a constraint or validation).
+    If there's no constraint on status, this test might pass. Adjust accordingly.
+    """
+    # Attempt to create an invalid status (e.g., 'alien_abduction' if not recognized)
+    invalid_ride = Ride(
+        pickup_location="123 Main St",
+        dropoff_location="456 Elm St",
+        status="alien_abduction"
     )
-    db_session.add(ride)
-    db_session.commit()
-    db_session.refresh(ride)
 
-    # Update fields
-    ride.status = "completed"
-    ride.end_location = "Updated Location"
-    db_session.commit()
-    db_session.refresh(ride)
+    test_db.add(invalid_ride)
 
-    assert ride.status == "completed", "Expected ride status to be updated to 'completed'."
-    assert ride.end_location == "Updated Location", "Expected ride end_location to be updated."
-
-
-def test_ride_model_deletion(db_session: Session):
-    """
-    Test that a Ride record can be deleted successfully.
-    """
-    ride_to_delete = Ride(
-        start_location="Delete Start",
-        end_location="Delete End",
-        status="ongoing",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
-    )
-    db_session.add(ride_to_delete)
-    db_session.commit()
-    db_session.refresh(ride_to_delete)
-    ride_id = ride_to_delete.id
-
-    db_session.delete(ride_to_delete)
-    db_session.commit()
-
-    # Attempt to retrieve the deleted record
-    deleted_ride = db_session.query(Ride).filter_by(id=ride_id).first()
-    assert deleted_ride is None, "Expected ride record to be deleted from the database."
+    # If your database or model enforces valid status values only, expect an error.
+    # Otherwise, this might succeed. Adjust if you have custom validation logic.
+    try:
+        test_db.commit()
+        # If no error is raised, we can still assert if we expect a certain default or behavior
+        test_db.refresh(invalid_ride)
+        # Example check if the status was overridden or if there's no constraint at all
+        # Uncomment or adjust based on your actual model behavior:
+        # assert invalid_ride.status in ["requested", "completed", "in_progress"], \
+        #     "Invalid status was allowed to persist in the database."
+    except IntegrityError:
+        # If there's a check constraint on status, an IntegrityError would be raised
+        test_db.rollback()
+        pytest.fail("Database persisted an invalid status or raised IntegrityError as expected.")

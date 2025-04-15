@@ -1,136 +1,132 @@
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
 from sqlalchemy.orm import Session
+from unittest.mock import patch
 
-# Import your FastAPI router from the main code
-from ...payments.payments_router import router
-
-
-@pytest.fixture(scope="module")
-def test_app():
-    """
-    Creates a FastAPI app for testing by including the payments router.
-    """
-    app = FastAPI()
-    app.include_router(router, prefix="/payments", tags=["payments"])
-    return app
-
+# Project-level imports
+from main import create_app
+from config import load_config
+# Import the router module if needed, though typically we test via the actual app routes:
+# from payments.payments_router import calculate_fare_endpoint, process_payment_endpoint, disburse_driver_payment_endpoint
 
 @pytest.fixture(scope="module")
-def client(test_app):
+def client():
     """
-    Provides a test client for sending requests to the FastAPI app.
+    Fixture to create a TestClient for the FastAPI app.
     """
-    with TestClient(test_app) as c:
-        yield c
-
+    app = create_app()
+    with TestClient(app) as test_client:
+        yield test_client
 
 @pytest.fixture
-def mock_db_session():
+def test_db():
     """
-    Provides a mock database session to avoid making real database calls.
+    Fixture to set up and tear down a test database session.
+    Replace or modify with actual DB setup/teardown logic if needed.
     """
-    # You can customize the MagicMock or patch specific methods if needed.
-    return MagicMock(spec=Session)
+    # SETUP: e.g., create a test session, create tables, etc.
+    db = Session(bind=None)  # Replace 'None' with actual engine if using a real DB
+    yield db
+    # TEARDOWN: e.g., drop tables, close connection, etc.
 
+@pytest.mark.describe("Payments Router - calculate_fare_endpoint")
+class TestCalculateFareEndpoint:
+    @pytest.mark.it("Should return a final or estimated fare (success case)")
+    def test_calculate_fare_success(self, client, test_db, mocker):
+        """
+        Test that calculate_fare_endpoint returns a valid fare when the ride is found and all conditions are met.
+        """
+        # Mock the payments_service.calculate_fare to return a test fare value
+        mocker.patch("payments.payments_service.calculate_fare", return_value=25.0)
 
-# -----------------------------
-# calculate_fare_endpoint Tests
-# -----------------------------
+        # Assuming the API is something like GET /payments/calculate_fare/{ride_id}
+        ride_id = 123
+        response = client.get(f"/payments/calculate_fare/{ride_id}")
 
-def test_calculate_fare_success(client, mock_db_session):
-    """
-    Test that calculate_fare_endpoint returns an estimated or final fare
-    for a valid ride_id.
-    """
-    ride_id = 123
-
-    # Optionally, patch any function inside payments_router that queries the DB
-    # or external services to prevent real calls.
-    with patch("...payments.payments_router.some_db_method", return_value={"fare": 15.5}):
-        response = client.get(f"/payments/fare/{ride_id}")
         assert response.status_code == 200
-        json_data = response.json()
-        assert "fare" in json_data
-        assert json_data["fare"] == 15.5
+        data = response.json()
+        # Verify that the returned fare matches the mocked value
+        assert data.get("fare") == 25.0
 
+    @pytest.mark.it("Should return 404 if the ride does not exist (error case)")
+    def test_calculate_fare_ride_not_found(self, client, test_db, mocker):
+        """
+        Test behavior when the ride is not found or invalid.
+        In this mock scenario, we might simulate raising an exception or returning None.
+        """
+        # Patch the service to return None indicating no valid ride was found
+        mocker.patch("payments.payments_service.calculate_fare", return_value=None)
 
-def test_calculate_fare_invalid_ride(client, mock_db_session):
-    """
-    Test that calculate_fare_endpoint returns an error when the ride_id is invalid.
-    """
-    invalid_ride_id = 999
+        ride_id = 999  # Assume this ride ID doesn't exist
+        response = client.get(f"/payments/calculate_fare/{ride_id}")
 
-    # Mock a DB lookup that returns None or raises an exception
-    with patch("...payments.payments_router.some_db_method", return_value=None):
-        response = client.get(f"/payments/fare/{invalid_ride_id}")
+        # Expecting a 404 or similar error response
         assert response.status_code == 404
-        json_data = response.json()
-        assert json_data.get("detail") == "Ride not found"
 
+@pytest.mark.describe("Payments Router - process_payment_endpoint")
+class TestProcessPaymentEndpoint:
+    @pytest.mark.it("Should successfully charge the rider's payment method")
+    def test_process_payment_success(self, client, test_db, mocker):
+        """
+        Test that process_payment_endpoint successfully charges the rider with valid input.
+        """
+        # Patch the service to simulate a successful charge (no exception thrown)
+        mocker.patch("payments.payments_service.charge_rider", return_value=True)
 
-# -----------------------------------
-# process_payment_endpoint Tests
-# -----------------------------------
+        # Assuming the API is something like POST /payments/process_payment/{ride_id}
+        ride_id = 45
+        response = client.post(f"/payments/process_payment/{ride_id}")
 
-def test_process_payment_success(client, mock_db_session):
-    """
-    Test that process_payment_endpoint successfully charges the rider for a valid ride.
-    """
-    ride_id = 321
-
-    # Mock the DB and external payment gateway call
-    with patch("...payments.payments_router.charge_rider_payment", return_value=True):
-        response = client.post(f"/payments/pay/{ride_id}")
         assert response.status_code == 200
-        json_data = response.json()
-        assert json_data.get("message") == "Payment processed successfully"
+        data = response.json()
+        assert data.get("message") == "Payment processed successfully"
 
+    @pytest.mark.it("Should return an error if rider has insufficient funds or charge fails")
+    def test_process_payment_failure(self, client, test_db, mocker):
+        """
+        Test behavior when the payment processing fails due to insufficient funds or another error.
+        """
+        # Simulate a payment failure by having charge_rider return False or raise an exception
+        mocker.patch("payments.payments_service.charge_rider", return_value=False)
 
-def test_process_payment_failure(client, mock_db_session):
-    """
-    Test that process_payment_endpoint returns an error if payment fails.
-    """
-    ride_id = 321
+        ride_id = 46
+        response = client.post(f"/payments/process_payment/{ride_id}")
 
-    # Mock the payment gateway to simulate an error
-    with patch("...payments.payments_router.charge_rider_payment", side_effect=Exception("Payment failed")):
-        response = client.post(f"/payments/pay/{ride_id}")
+        # Expecting an error code, e.g., 400 or 402 Payment Required
         assert response.status_code == 400
-        json_data = response.json()
-        assert json_data.get("detail") == "Payment failed"
+        data = response.json()
+        assert "error" in data
 
+@pytest.mark.describe("Payments Router - disburse_driver_payment_endpoint")
+class TestDisburseDriverPaymentEndpoint:
+    @pytest.mark.it("Should disburse payment to the driver for a completed ride")
+    def test_disburse_driver_payment_success(self, client, test_db, mocker):
+        """
+        Test that disburse_driver_payment_endpoint pays the driver successfully under normal conditions.
+        """
+        # Patch the service to simulate a successful driver payout
+        mocker.patch("payments.payments_service.payout_driver", return_value=True)
 
-# -----------------------------------------
-# disburse_driver_payment_endpoint Tests
-# -----------------------------------------
+        # Assuming the API is something like POST /payments/disburse_driver_payment/{ride_id}
+        ride_id = 101
+        response = client.post(f"/payments/disburse_driver_payment/{ride_id}")
 
-def test_disburse_driver_payment_success(client, mock_db_session):
-    """
-    Test that disburse_driver_payment_endpoint successfully disburses payment to the driver
-    for a completed ride.
-    """
-    ride_id = 456
-
-    # Mock the DB and external transaction call
-    with patch("...payments.payments_router.pay_driver", return_value=True):
-        response = client.post(f"/payments/disburse/{ride_id}")
         assert response.status_code == 200
-        json_data = response.json()
-        assert json_data.get("message") == "Driver payment disbursed"
+        data = response.json()
+        assert data.get("message") == "Driver payment disbursed successfully"
 
+    @pytest.mark.it("Should return an error if the ride isn't completed or doesn't exist")
+    def test_disburse_driver_payment_failure(self, client, test_db, mocker):
+        """
+        Test behavior when the payout cannot happen (e.g., ride not completed, driver ID unknown, etc.).
+        """
+        # Simulate a failure by having payout_driver return False or raise an exception
+        mocker.patch("payments.payments_service.payout_driver", return_value=False)
 
-def test_disburse_driver_payment_for_non_completed_ride(client, mock_db_session):
-    """
-    Test that disburse_driver_payment_endpoint returns an error if the ride is not completed.
-    """
-    ride_id = 456
+        ride_id = 202
+        response = client.post(f"/payments/disburse_driver_payment/{ride_id}")
 
-    # Mock a scenario where the ride is not completed
-    with patch("...payments.payments_router.pay_driver", side_effect=ValueError("Ride not completed")):
-        response = client.post(f"/payments/disburse/{ride_id}")
+        # Expecting an error code, e.g., 400 or 404
         assert response.status_code == 400
-        json_data = response.json()
-        assert json_data.get("detail") == "Ride not completed"
+        data = response.json()
+        assert "error" in data

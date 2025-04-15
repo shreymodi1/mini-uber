@@ -1,170 +1,163 @@
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from unittest.mock import patch, MagicMock
 from sqlalchemy.orm import Session
 
-# Router import from the rides module
-from ...rides.rides_router import router
+from main import create_app
+from config import load_config
 
-# Example model import (if needed for mocking or validation)
-from ...models import Ride
-
-
-@pytest.fixture(scope="module")
-def test_app():
-    """
-    Fixture to create a FastAPI test application and include the rides router
-    """
-    app = FastAPI()
-    app.include_router(router, prefix="/rides")
-    yield app
-
+# NOTE: We assume that the FastAPI application in main.py includes the rides router
+# (from rides.rides_router) so that these endpoints are available at runtime.
 
 @pytest.fixture
-def client(test_app):
+def client():
     """
-    Fixture to create a test client for making HTTP requests
+    Fixture to provide a TestClient for the FastAPI app.
     """
-    with TestClient(test_app) as c:
-        yield c
-
+    app = create_app()
+    return TestClient(app)
 
 @pytest.fixture
-def mock_db_session():
+def test_db():
     """
-    Fixture to provide a mock or test DB session
-    Replace or extend with actual DB session logic or mock if necessary
+    Fixture for providing a mock or test database session, if needed.
+    This can be replaced with a real database session setup if desired.
     """
-    # Could mock methods like session.query, session.add, session.commit, etc.
-    class MockSession:
-        def add(self, obj):
-            pass
-
-        def commit(self):
-            pass
-
-        def refresh(self, obj):
-            pass
-
-        def close(self):
-            pass
-
-    return MockSession()
-
+    # In a real scenario, you might set up an in-memory SQLite or a mock
+    # For now, we'll just yield a MagicMock to fulfill the signature
+    db_session = MagicMock(spec=Session)
+    yield db_session
 
 # -------------------------
-# TESTS FOR request_ride_endpoint
+# request_ride_endpoint
 # -------------------------
-def test_request_ride_success(client, mock_db_session):
-    """
-    Test successful ride request with valid pickup and dropoff data
-    """
-    payload = {"pickup": "Location A", "dropoff": "Location B"}
-    response = client.post("/rides/", json=payload)
 
-    # Assert the endpoint returns HTTP 201 or 200 on success (assuming 201 is used for creation)
-    assert response.status_code == 201
-    assert response.json()["pickup"] == payload["pickup"]
-    assert response.json()["dropoff"] == payload["dropoff"]
-    assert "ride_id" in response.json()
-
-
-def test_request_ride_missing_data(client, mock_db_session):
+def test_request_ride_success(client, test_db):
     """
-    Test request ride endpoint with missing pickup or dropoff data
-    to verify it returns a bad request error
+    Test successful ride request with valid data.
+    Expects a 200 or 201 response indicating ride creation.
     """
-    payload = {"pickup": "Location A"}  # Missing dropoff
-    response = client.post("/rides/", json=payload)
+    request_data = {
+        "rider_id": 1,
+        "pickup_location": "Point A",
+        "dropoff_location": "Point B"
+    }
+    response = client.post("/rides/request_ride", json=request_data)
+    assert response.status_code in [200, 201]
+    response_json = response.json()
+    assert "ride_id" in response_json
+    assert response_json["ride_id"] is not None
 
-    # Expecting a 422 or 400 for validation error
+def test_request_ride_missing_data(client, test_db):
+    """
+    Test ride request with missing fields.
+    Expects a 422 or 400 response due to invalid data.
+    """
+    request_data = {
+        "rider_id": 1
+        # Missing 'pickup_location' and 'dropoff_location'
+    }
+    response = client.post("/rides/request_ride", json=request_data)
     assert response.status_code in [400, 422]
 
-
-def test_request_ride_invalid_data(client, mock_db_session):
+@patch("rides.rides_router.rides_service.create_ride")
+def test_request_ride_service_mock(mock_create_ride, client, test_db):
     """
-    Test request ride endpoint with invalid data (e.g., empty strings)
+    Test ride request mocking the rides_service.create_ride function.
+    Verifies that the service layer is called with correct arguments.
     """
-    payload = {"pickup": "", "dropoff": ""}
-    response = client.post("/rides/", json=payload)
-
-    # Expecting a validation error
-    assert response.status_code in [400, 422]
-
+    mock_create_ride.return_value = {"ride_id": 101, "status": "pending"}
+    request_data = {
+        "rider_id": 5,
+        "pickup_location": "North Gate",
+        "dropoff_location": "South Station"
+    }
+    response = client.post("/rides/request_ride", json=request_data)
+    assert response.status_code in [200, 201]
+    mock_create_ride.assert_called_once_with(
+        rider_id=5,
+        pickup_location="North Gate",
+        dropoff_location="South Station"
+    )
 
 # -------------------------
-# TESTS FOR update_ride_status_endpoint
+# update_ride_status_endpoint
 # -------------------------
-def test_update_ride_status_success(client, mock_db_session):
+
+def test_update_ride_status_success(client, test_db):
     """
-    Test successfully updating ride status
+    Test a valid ride status update.
+    Expects a 200 response and confirmation of new status.
     """
-    # First create a new ride
-    create_payload = {"pickup": "Location A", "dropoff": "Location B"}
-    create_response = client.post("/rides/", json=create_payload)
-    ride_id = create_response.json()["ride_id"]
-
-    # Update status
-    update_payload = {"status": "started"}
-    update_response = client.put(f"/rides/{ride_id}/status", json=update_payload)
-
-    assert update_response.status_code == 200
-    assert update_response.json()["status"] == "started"
-
-
-def test_update_ride_status_invalid_status(client, mock_db_session):
-    """
-    Test updating ride status with an invalid status value
-    """
-    # Create a new ride
-    create_payload = {"pickup": "Location A", "dropoff": "Location B"}
-    create_response = client.post("/rides/", json=create_payload)
-    ride_id = create_response.json()["ride_id"]
-
-    # Attempt to update with invalid status
-    update_payload = {"status": "flying"}  # Not a valid ride status
-    update_response = client.put(f"/rides/{ride_id}/status", json=update_payload)
-
-    # Expecting a 400 or 422 for invalid status
-    assert update_response.status_code in [400, 422]
-
-
-def test_update_ride_status_ride_not_found(client, mock_db_session):
-    """
-    Test updating status for a ride that does not exist
-    """
-    update_payload = {"status": "completed"}
-    response = client.put("/rides/999999/status", json=update_payload)  # Non-existent ride_id
-
-    # Expecting 404 if ride is not found
-    assert response.status_code == 404
-
-
-# -------------------------
-# TESTS FOR get_ride_details_endpoint
-# -------------------------
-def test_get_ride_details_success(client, mock_db_session):
-    """
-    Test fetching existing ride details
-    """
-    # Create a new ride
-    create_payload = {"pickup": "Location A", "dropoff": "Location B"}
-    create_response = client.post("/rides/", json=create_payload)
-    ride_id = create_response.json()["ride_id"]
-
-    # Fetch details
-    response = client.get(f"/rides/{ride_id}")
-
+    ride_id = 123
+    response = client.put(f"/rides/{ride_id}/status", json={"status": "accepted"})
     assert response.status_code == 200
-    assert "pickup" in response.json()
-    assert response.json()["pickup"] == "Location A"
+    response_json = response.json()
+    assert response_json.get("ride_id") == ride_id
+    assert response_json.get("status") == "accepted"
 
-
-def test_get_ride_details_not_found(client, mock_db_session):
+def test_update_ride_status_invalid_status(client, test_db):
     """
-    Test fetching ride details for a non-existent ride
+    Test ride status update with an invalid status value.
+    Expects a 400 or 422 response.
     """
-    response = client.get("/rides/999999")
+    ride_id = 999
+    response = client.put(f"/rides/{ride_id}/status", json={"status": "unknown_status"})
+    assert response.status_code in [400, 422]
 
-    # Expecting 404 for non-existent ride
+@patch("rides.rides_router.rides_service.update_ride_status")
+def test_update_ride_status_service_mock(mock_update_ride_status, client, test_db):
+    """
+    Test ride status update with a mocked rides_service.update_ride_status function.
+    Verifies that the service layer is called correctly.
+    """
+    mock_update_ride_status.return_value = {"ride_id": 999, "status": "started"}
+    response = client.put("/rides/999/status", json={"status": "started"})
+    assert response.status_code == 200
+    mock_update_ride_status.assert_called_once_with(999, "started")
+
+# -------------------------
+# get_ride_details_endpoint
+# -------------------------
+
+def test_get_ride_details_success(client, test_db):
+    """
+    Test fetching ride details for a valid ride ID.
+    Expects a 200 response and valid ride detail fields in the JSON.
+    """
+    ride_id = 555
+    response = client.get(f"/rides/{ride_id}/details")
+    assert response.status_code == 200
+    response_json = response.json()
+    assert response_json.get("ride_id") == ride_id
+    assert "pickup_location" in response_json
+    assert "dropoff_location" in response_json
+    assert "status" in response_json
+
+def test_get_ride_details_not_found(client, test_db):
+    """
+    Test fetching ride details for a ride ID that does not exist.
+    Expects a 404 response.
+    """
+    ride_id = 999999
+    response = client.get(f"/rides/{ride_id}/details")
     assert response.status_code == 404
+
+@patch("rides.rides_router.rides_service.fetch_ride")
+def test_get_ride_details_service_mock(mock_fetch_ride, client, test_db):
+    """
+    Test the get ride details endpoint, mocking the rides_service.fetch_ride call.
+    Validates correct response handling.
+    """
+    mock_fetch_ride.return_value = {
+        "ride_id": 222,
+        "pickup_location": "Location X",
+        "dropoff_location": "Location Y",
+        "status": "completed"
+    }
+    response = client.get("/rides/222/details")
+    assert response.status_code == 200
+    response_json = response.json()
+    assert response_json["ride_id"] == 222
+    assert response_json["status"] == "completed"
+    mock_fetch_ride.assert_called_once_with(222)

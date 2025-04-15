@@ -1,94 +1,114 @@
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
+from unittest.mock import MagicMock
+from main import create_app
+from riders.riders_service import create_rider, fetch_rider
 
-# Import the router you want to test
-from ...riders.riders_router import router
-# Import any necessary models if needed
-from ...models import YourModel
 
 @pytest.fixture
-def test_app():
+def client():
     """
-    Create and configure a new FastAPI app instance with the riders router included.
-    This fixture will be used by the TestClient fixture below.
+    Fixture to initialize the FastAPI test client using the main.py create_app function.
     """
-    app = FastAPI()
-    app.include_router(router, prefix="/riders", tags=["riders"])
-    return app
+    app = create_app()
+    return TestClient(app)
+
 
 @pytest.fixture
-def client(test_app):
+def mock_create_rider(mocker):
     """
-    Returns a TestClient instance for making requests to the 'test_app' fixture.
+    Fixture to mock out the create_rider service call to prevent actual DB interaction.
     """
-    return TestClient(test_app)
+    return mocker.patch("riders.riders_service.create_rider")
+
 
 @pytest.fixture
-def db_session():
+def mock_fetch_rider(mocker):
     """
-    Setup a database session fixture. Here you could create an in-memory database or
-    mock database interactions as needed. For now, this is a placeholder.
+    Fixture to mock out the fetch_rider service call to prevent actual DB interaction.
     """
-    session = Session(bind=None)  # Replace 'None' with an actual testing engine if needed
-    yield session
-    session.close()
+    return mocker.patch("riders.riders_service.fetch_rider")
 
-# ------------------------- Tests for create_rider_endpoint -------------------------
 
-def test_create_rider_endpoint_success(client, db_session):
+def test_create_rider_endpoint_success(client, mock_create_rider):
     """
-    Test creating a new rider with valid data.
-    Expect a 201 status code and a response containing newly created rider details.
+    Test the rider creation endpoint with valid data.
+    Expects 201 status and a success response structure.
     """
-    new_rider_data = {
-        "name": "Test Rider",
-        "email": "test@example.com",
-        "phone": "1234567890"
+    # Arrange
+    mock_create_rider.return_value = {
+        "id": 1,
+        "name": "John Doe",
+        "phone_number": "1234567890",
+        "payment_method": "credit_card"
     }
-    response = client.post("/riders/create_rider", json=new_rider_data)
+    request_data = {
+        "name": "John Doe",
+        "phone_number": "1234567890",
+        "payment_method": "credit_card"
+    }
+
+    # Act
+    response = client.post("/riders", json=request_data)
+
+    # Assert
     assert response.status_code == 201
-    response_json = response.json()
-    assert response_json["name"] == "Test Rider"
-    assert response_json["email"] == "test@example.com"
-    assert "id" in response_json  # Assuming the created rider has an ID returned
+    assert response.json()["id"] == 1
+    mock_create_rider.assert_called_once_with(
+        name="John Doe",
+        phone_number="1234567890",
+        payment_method="credit_card"
+    )
 
-def test_create_rider_endpoint_error_missing_fields(client, db_session):
+
+def test_create_rider_endpoint_bad_request(client, mock_create_rider):
     """
-    Test creating a new rider with missing required fields.
-    Expect a 422 or 400 error depending on your validation/exception handling strategy.
+    Test the rider creation endpoint with incomplete data.
+    Expects a 422 (Unprocessable Entity) or 400 (Bad Request) for invalid payload.
     """
-    incomplete_data = {
-        # Intentionally missing some required fields like 'email' or 'phone'
-        "name": "Rider Without Email"
+    request_data = {
+        # 'name' is missing
+        "phone_number": "1234567890",
+        "payment_method": "credit_card"
     }
-    response = client.post("/riders/create_rider", json=incomplete_data)
+
+    response = client.post("/riders", json=request_data)
+
+    # The endpoint should validate input and return 422 or similar
     assert response.status_code in [400, 422]
+    mock_create_rider.assert_not_called()
 
-# ------------------------- Tests for get_rider_profile_endpoint -------------------------
 
-def test_get_rider_profile_endpoint_success(client, db_session):
+def test_get_rider_profile_endpoint_success(client, mock_fetch_rider):
     """
-    Test retrieving a rider profile by valid rider_id.
-    Expect a 200 status code and correct rider profile data.
+    Test the get rider profile endpoint with an existing rider ID.
+    Expects 200 status and correct rider data in the response.
     """
-    # Insert a test rider into the DB or mock it.
-    test_rider_id = 1
+    mock_fetch_rider.return_value = {
+        "id": 2,
+        "name": "Jane Roe",
+        "phone_number": "0987654321",
+        "payment_method": "paypal"
+    }
+    rider_id = 2
 
-    # Example: If your endpoint is /riders/{rider_id}
-    response = client.get(f"/riders/{test_rider_id}")
+    response = client.get(f"/riders/{rider_id}")
+
     assert response.status_code == 200
-    response_json = response.json()
-    assert response_json["id"] == test_rider_id
-    assert "email" in response_json
-    assert "name" in response_json
+    assert response.json()["id"] == 2
+    assert response.json()["name"] == "Jane Roe"
+    mock_fetch_rider.assert_called_once_with(rider_id=2)
 
-def test_get_rider_profile_endpoint_not_found(client, db_session):
+
+def test_get_rider_profile_endpoint_not_found(client, mock_fetch_rider):
     """
-    Test retrieving a rider profile with an invalid rider_id or one that doesn't exist.
-    Expect a 404 status code to indicate the rider was not found.
+    Test the get rider profile endpoint with a non-existent rider ID.
+    Expects 404 status when the rider is not found.
     """
-    non_existent_rider_id = 9999
-    response = client.get(f"/riders/{non_existent_rider_id}")
+    mock_fetch_rider.return_value = None
+    rider_id = 999  # Non-existent rider ID for testing
+
+    response = client.get(f"/riders/{rider_id}")
+
     assert response.status_code == 404
+    mock_fetch_rider.assert_called_once_with(rider_id=999)
