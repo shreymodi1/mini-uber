@@ -27,9 +27,6 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         
-        # List installed packages for debugging
-        pip list
-        
         # Install pytest and compatible packages first
         pip install pytest==7.3.1 pytest-cov==4.1.0 pytest-asyncio==0.21.0
         
@@ -48,10 +45,6 @@ jobs:
         # Ensure other necessary packages are installed
         pip install httpx fastapi
         
-        # Show final list of installed packages
-        echo "Final installed packages:"
-        pip list
-        
     - name: Run tests and capture results
       id: test-run
       run: |
@@ -64,10 +57,12 @@ jobs:
         TEST_STATUS=$?
         echo "status=$TEST_STATUS" >> $GITHUB_ENV
         
-        # Print the test results for easier debugging
-        echo "=== TEST RESULTS ==="
+        # Print the full test results for clearer debugging
+        echo "=========================================="
+        echo "COMPLETE TEST RESULTS OUTPUT:"
+        echo "=========================================="
         cat test_artifacts/test_results.txt
-        echo "=================="
+        echo "=========================================="
         
         if [ $TEST_STATUS -eq 0 ]; then
           echo "Tests passed successfully!"
@@ -75,68 +70,73 @@ jobs:
           echo "Tests failed with status $TEST_STATUS"
         fi
 
-    - name: DEBUG - Collect repository files and print context
-      # Run this step for every job, regardless of test result
+    - name: Collect repository files and print data
       run: |
-        echo "=== DEBUG MODE: Collecting files and printing context ==="
+        echo "=========================================="
+        echo "COLLECTING FILES AND PRINTING PAYLOAD DATA"
+        echo "=========================================="
         mkdir -p test_artifacts/repo_files
         
-        # Create a function to collect Python files
-        collect_dir_files() {
+        # Collect files from each directory
+        echo "COLLECTING PYTHON FILES FROM SPECIFIED DIRECTORIES:"
+        
+        # Function to collect and print files
+        collect_and_print_files() {
           local dir=$1
           
-          # Skip if directory doesn't exist
           if [ ! -d "$dir" ]; then
-            echo "Directory $dir does not exist, skipping"
+            echo "Directory $dir does not exist"
             return
           fi
           
-          echo "Collecting files from $dir"
-          files_count=$(find "$dir" -name "*.py" -type f -not -path "*/\.*" -not -path "*/__pycache__/*" | wc -l)
-          echo "Found $files_count Python files in $dir"
+          echo "Directory: $dir"
+          files_found=$(find "$dir" -name "*.py" -type f -not -path "*/\.*" -not -path "*/__pycache__/*")
           
-          find "$dir" -name "*.py" -type f -not -path "*/\.*" -not -path "*/__pycache__/*" | while read file; do
-            dest_file="test_artifacts/repo_files/$file"
-            mkdir -p "$(dirname "$dest_file")"
-            cp "$file" "$dest_file"
-            echo "  - Copied $file"
+          if [ -z "$files_found" ]; then
+            echo "  No Python files found in $dir"
+            return
+          fi
+          
+          echo "  Files found:"
+          for file in $files_found; do
+            echo "  - $file"
+            mkdir -p "test_artifacts/repo_files/$(dirname "$file")"
+            cp "$file" "test_artifacts/repo_files/$file"
+            
+            # Print the file contents
+            echo "    CONTENTS OF $file:"
+            echo "    ---------------------------------------------------"
+            cat "$file"
+            echo "    ---------------------------------------------------"
           done
         }
         
-        # Collect files from each directory
-        echo "Collecting Python files from specified directories..."
-        collect_dir_files "payments"
-        collect_dir_files "ratings"
-        collect_dir_files "riders"
-        collect_dir_files "rides"
-        collect_dir_files "drivers"
+        collect_and_print_files "payments"
+        collect_and_print_files "ratings"
+        collect_and_print_files "riders"
+        collect_and_print_files "rides"
+        collect_and_print_files "drivers"
         
-        # Copy individual files
-        echo "Copying main.py and config.py..."
-        if [ -f main.py ]; then
-          cp main.py test_artifacts/repo_files/main.py
-          echo "  - Copied main.py"
-        else
-          echo "  - WARNING: main.py not found"
-        fi
+        # Copy and print individual files
+        echo "INDIVIDUAL FILES:"
+        for file in "main.py" "config.py"; do
+          if [ -f "$file" ]; then
+            echo "- $file"
+            cp "$file" "test_artifacts/repo_files/$file"
+            
+            echo "  CONTENTS OF $file:"
+            echo "  ---------------------------------------------------"
+            cat "$file"
+            echo "  ---------------------------------------------------"
+          else
+            echo "- $file (not found)"
+          fi
+        done
         
-        if [ -f config.py ]; then
-          cp config.py test_artifacts/repo_files/config.py
-          echo "  - Copied config.py"
-        else
-          echo "  - WARNING: config.py not found"
-        fi
-        
-        # Print summary of collected files
-        echo "=== Collected Files Summary ==="
-        find test_artifacts/repo_files -type f | sort
-        echo "Total files: $(find test_artifacts/repo_files -type f | wc -l)"
-        
-        # Encode test results as base64 to preserve formatting
+        # Encode test results as base64
         TEST_RESULTS_BASE64=$(cat test_artifacts/test_results.txt | base64 -w 0)
-        echo "Test results encoded as base64 (first 100 chars): ${TEST_RESULTS_BASE64:0:100}..."
         
-        # Create initial JSON payload with test results only
+        # Prepare payload
         cat > test_artifacts/payload.json << EOF
         {
           "test_results_base64": "${TEST_RESULTS_BASE64}",
@@ -144,57 +144,51 @@ jobs:
         }
         EOF
         
-        # Add all repository files to payload
-        echo "Adding repository files to payload..."
+        # Add repository files to payload
         jq '.repo_files = {}' test_artifacts/payload.json > test_artifacts/payload_with_files.json
         
         find test_artifacts/repo_files -type f -name "*.py" | while read file; do
-          # Get relative path
           rel_path=$(echo "$file" | sed 's|test_artifacts/repo_files/||')
-          
-          # Add file content to the payload
           FILE_CONTENT=$(cat "$file" | jq -Rs .)
           jq --arg file "$rel_path" --arg content "$FILE_CONTENT" '.repo_files[$file] = $content' test_artifacts/payload_with_files.json > test_artifacts/payload_tmp.json
           mv test_artifacts/payload_tmp.json test_artifacts/payload_with_files.json
-          echo "  - Added $rel_path to payload"
         done
         
         mv test_artifacts/payload_with_files.json test_artifacts/payload.json
         
-        # Print summary of payload content
-        echo "=== Payload Content Summary ==="
+        # Print summary of the payload
+        echo "=========================================="
+        echo "SUMMARY OF PAYLOAD"
+        echo "=========================================="
         echo "Payload size: $(wc -c < test_artifacts/payload.json) bytes"
         echo "Number of files in payload: $(jq '.repo_files | keys | length' test_artifacts/payload.json)"
-        echo "Files included in payload:"
-        jq '.repo_files | keys' test_artifacts/payload.json
         
-        # Print the first few characters of each file for verification
-        echo "=== Sample File Contents ==="
-        for file_path in $(jq -r '.repo_files | keys[]' test_artifacts/payload.json | head -3); do
-          echo "File: $file_path"
-          jq -r ".repo_files[\"$file_path\"]" test_artifacts/payload.json | head -5
-          echo "..."
-        done
+        echo "List of files in payload:"
+        jq -r '.repo_files | keys[]' test_artifacts/payload.json | sort
         
-        echo "=== DEBUG: API Call Would Send to: https://uber-feedback-agent.vercel.app/api/analyze ==="
+        echo "=========================================="
+        echo "ORIGINAL TEST RESULTS (for verification)"
+        echo "=========================================="
+        # Decode and print base64 test results to verify it's correct
+        echo "$TEST_RESULTS_BASE64" | base64 --decode
+        
+        # Create placeholder for mock response
+        echo "=========================================="
+        echo "DEBUG: API CALL WOULD BE SENT TO VERCEL"
+        echo "=========================================="
         echo "API call skipped for debugging purposes"
+        echo "Using placeholder feedback instead"
         
-        # Create a mock response for testing
+        # Mock response
         cat > test_artifacts/ai_feedback.md << EOF
-        ## DEBUG MODE: API Call Skipped
-
-        This is a placeholder feedback message for debugging purposes.
+        ## Debug Mode: Analysis of Repository Data
         
-        The payload was successfully prepared with:
-        - Test results (encoded in base64)
-        - $(jq '.repo_files | keys | length' test_artifacts/payload.json) Python files from your repository
+        This is a placeholder message. In production, this would be AI-generated feedback.
         
-        In normal operation, this would be replaced with AI-generated feedback about your tests.
+        The payload contained:
+        - Complete test results
+        - $(jq '.repo_files | keys | length' test_artifacts/payload.json) Python files
         EOF
-        
-        # Display mock feedback
-        echo "=== DEBUG: Mock AI Analysis (API call skipped) ==="
-        cat test_artifacts/ai_feedback.md
 
     - name: Comment on PR with feedback 
       if: github.event_name == 'pull_request'
