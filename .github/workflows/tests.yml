@@ -212,3 +212,9 @@ jobs:
         else
           echo "Warning: Feedback file not found"
         fi
+
+    - name: Upload test artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: test-artifacts
+        path: test_artifacts/ 
