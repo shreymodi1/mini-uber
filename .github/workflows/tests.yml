@@ -48,7 +48,7 @@ jobs:
         file: ./coverage.xml
         fail_ci_if_error: false
 
-    - name: Collect repository files
+    - name: Collect repository files and analyze if tests failed
       if: env.status != '0'
       run: |
         mkdir -p test_artifacts/repo_files
@@ -81,10 +81,7 @@ jobs:
         # Copy individual files
         cp main.py test_artifacts/repo_files/main.py
         cp config.py test_artifacts/repo_files/config.py
-    
-    - name: Prepare payload for API
-      if: env.status != '0'
-      run: |
+        
         # Encode test results as base64 to preserve formatting
         TEST_RESULTS_BASE64=$(cat test_artifacts/test_results.txt | base64 -w 0)
         
@@ -111,11 +108,9 @@ jobs:
         done
         
         mv test_artifacts/payload_with_files.json test_artifacts/payload.json
-    
-    - name: Request AI feedback if tests failed
-      if: env.status != '0'
-      run: |
-        # Send to Vercel function
+        
+        # Send to Vercel function and store results
+        echo "Sending test results to AI analyzer..."
         curl -X POST https://uber-feedback-agent.vercel.app/api/analyze \
           -H "Content-Type: application/json" \
           -d @test_artifacts/payload.json \
@@ -123,25 +118,23 @@ jobs:
         
         # Extract feedback from response
         cat test_artifacts/ai_feedback.json | jq -r '.feedback' > test_artifacts/ai_feedback.md
-    
-    - name: Upload AI feedback as artifact
-      if: env.status != '0'
-      uses: actions/upload-artifact@v2
-      with:
-        name: ai-feedback
-        path: test_artifacts/ai_feedback.md
         
-    - name: Comment on PR with feedback
+        # Display feedback in the log
+        echo "AI Analysis of Test Failures:"
+        cat test_artifacts/ai_feedback.md
+        
+        # Save feedback as a GitHub step output
+        echo "::set-output name=feedback::$(cat test_artifacts/ai_feedback.md | sed 's/\n/%0A/g' | sed 's/\r/%0D/g')"
+    
+    - name: Comment on PR with feedback 
       if: env.status != '0' && github.event_name == 'pull_request'
-      uses: actions/github-script@v6
-      with:
-        script: |
-          const fs = require('fs');
-          const feedback = fs.readFileSync('test_artifacts/ai_feedback.md', 'utf8');
-          
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: `# AI Analysis of Test Failures\n\n${feedback}`
-          });
+      run: |
+        # Read the feedback from file
+        FEEDBACK=$(cat test_artifacts/ai_feedback.md)
+        
+        # Use GitHub REST API directly with curl
+        curl -X POST \
+          -H "Authorization: token ${{ github.token }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
+          -d "{\"body\":\"# AI Analysis of Test Failures\n\n$FEEDBACK\"}"
