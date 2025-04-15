@@ -60,126 +60,128 @@ jobs:
         # Try to run the tests, but always succeed (true command will ensure successful exit)
         python -m pytest -v > test_artifacts/test_results.txt 2>&1 || true
         
-        # Store the real exit status for later use
-        echo "status=$?" >> $GITHUB_ENV
+        # Store the exit status for informational purposes
+        TEST_STATUS=$?
+        echo "status=$TEST_STATUS" >> $GITHUB_ENV
         
         # Print the test results for easier debugging
         echo "=== TEST RESULTS ==="
         cat test_artifacts/test_results.txt
         echo "=================="
-
-    - name: Collect repository files and analyze if tests failed
-      # Always run this step - if tests pass, we'll just check the status inside
-      run: |
-        # Check if tests failed and set a variable
-        TESTS_FAILED=0
-        if [ "${{ env.status }}" != "0" ]; then
-          echo "Tests failed with status ${{ env.status }}, generating AI feedback..."
-          TESTS_FAILED=1
-        else
-          echo "Tests passed successfully! No need for AI feedback."
-          exit 0
-        fi
         
-        # Only continue if tests failed
-        if [ "$TESTS_FAILED" == "1" ]; then
-          mkdir -p test_artifacts/repo_files
+        if [ $TEST_STATUS -eq 0 ]; then
+          echo "Tests passed successfully!"
+        else
+          echo "Tests failed with status $TEST_STATUS"
+        fi
+
+    - name: Collect repository files and analyze tests
+      # Run this step for every job, regardless of test result
+      run: |
+        echo "Generating AI feedback for test results..."
+        mkdir -p test_artifacts/repo_files
+        
+        # Create a function to collect Python files
+        collect_dir_files() {
+          local dir=$1
           
-          # Create a function to collect Python files
-          collect_dir_files() {
-            local dir=$1
-            
-            # Skip if directory doesn't exist
-            if [ ! -d "$dir" ]; then
-              echo "Directory $dir does not exist, skipping"
-              return
-            fi
-            
-            echo "Collecting files from $dir"
-            find "$dir" -name "*.py" -type f -not -path "*/\.*" -not -path "*/__pycache__/*" | while read file; do
-              dest_file="test_artifacts/repo_files/$file"
-              mkdir -p "$(dirname "$dest_file")"
-              cp "$file" "$dest_file"
-            done
-          }
-          
-          # Collect files from each directory
-          collect_dir_files "payments"
-          collect_dir_files "ratings"
-          collect_dir_files "riders"
-          collect_dir_files "rides"
-          collect_dir_files "drivers"
-          
-          # Copy individual files
-          cp main.py test_artifacts/repo_files/main.py
-          cp config.py test_artifacts/repo_files/config.py
-          
-          # Encode test results as base64 to preserve formatting
-          TEST_RESULTS_BASE64=$(cat test_artifacts/test_results.txt | base64 -w 0)
-          
-          # Create initial JSON payload with test results only
-          cat > test_artifacts/payload.json << EOF
-          {
-            "test_results_base64": "${TEST_RESULTS_BASE64}",
-            "repo_files": {}
-          }
-          EOF
-          
-          # Add all repository files to payload
-          echo "Adding repository files to payload"
-          jq '.repo_files = {}' test_artifacts/payload.json > test_artifacts/payload_with_files.json
-          
-          find test_artifacts/repo_files -type f -name "*.py" | while read file; do
-            # Get relative path
-            rel_path=$(echo "$file" | sed 's|test_artifacts/repo_files/||')
-            
-            # Add file content to the payload
-            FILE_CONTENT=$(cat "$file" | jq -Rs .)
-            jq --arg file "$rel_path" --arg content "$FILE_CONTENT" '.repo_files[$file] = $content' test_artifacts/payload_with_files.json > test_artifacts/payload_tmp.json
-            mv test_artifacts/payload_tmp.json test_artifacts/payload_with_files.json
-          done
-          
-          mv test_artifacts/payload_with_files.json test_artifacts/payload.json
-          
-          # Send to Vercel function and store results
-          echo "Sending test results to AI analyzer..."
-          curl -X POST https://uber-feedback-agent.vercel.app/api/analyze \
-            -H "Content-Type: application/json" \
-            -d @test_artifacts/payload.json \
-            > test_artifacts/ai_feedback.json
-          
-          # Check if the response is valid JSON
-          if jq -e . >/dev/null 2>&1 <<<"$(cat test_artifacts/ai_feedback.json)"; then
-            echo "Received valid JSON response from analyzer"
-            # Extract feedback from response
-            jq -r '.feedback' test_artifacts/ai_feedback.json > test_artifacts/ai_feedback.md
-          else
-            echo "Error: Received invalid JSON response from analyzer"
-            echo "Response content:"
-            cat test_artifacts/ai_feedback.json
-            echo "Using error message as feedback"
-            echo "Error: The analyzer service returned an invalid response" > test_artifacts/ai_feedback.md
+          # Skip if directory doesn't exist
+          if [ ! -d "$dir" ]; then
+            echo "Directory $dir does not exist, skipping"
+            return
           fi
           
-          # Display feedback in the log
-          echo "AI Analysis of Test Failures:"
-          cat test_artifacts/ai_feedback.md
+          echo "Collecting files from $dir"
+          find "$dir" -name "*.py" -type f -not -path "*/\.*" -not -path "*/__pycache__/*" | while read file; do
+            dest_file="test_artifacts/repo_files/$file"
+            mkdir -p "$(dirname "$dest_file")"
+            cp "$file" "$dest_file"
+          done
+        }
+        
+        # Collect files from each directory
+        collect_dir_files "payments"
+        collect_dir_files "ratings"
+        collect_dir_files "riders"
+        collect_dir_files "rides"
+        collect_dir_files "drivers"
+        
+        # Copy individual files
+        cp main.py test_artifacts/repo_files/main.py
+        cp config.py test_artifacts/repo_files/config.py
+        
+        # Encode test results as base64 to preserve formatting
+        TEST_RESULTS_BASE64=$(cat test_artifacts/test_results.txt | base64 -w 0)
+        
+        # Create initial JSON payload with test results only
+        cat > test_artifacts/payload.json << EOF
+        {
+          "test_results_base64": "${TEST_RESULTS_BASE64}",
+          "repo_files": {}
+        }
+        EOF
+        
+        # Add all repository files to payload
+        echo "Adding repository files to payload"
+        jq '.repo_files = {}' test_artifacts/payload.json > test_artifacts/payload_with_files.json
+        
+        find test_artifacts/repo_files -type f -name "*.py" | while read file; do
+          # Get relative path
+          rel_path=$(echo "$file" | sed 's|test_artifacts/repo_files/||')
+          
+          # Add file content to the payload
+          FILE_CONTENT=$(cat "$file" | jq -Rs .)
+          jq --arg file "$rel_path" --arg content "$FILE_CONTENT" '.repo_files[$file] = $content' test_artifacts/payload_with_files.json > test_artifacts/payload_tmp.json
+          mv test_artifacts/payload_tmp.json test_artifacts/payload_with_files.json
+        done
+        
+        mv test_artifacts/payload_with_files.json test_artifacts/payload.json
+        
+        # Send to Vercel function and store results
+        echo "Sending test results to AI analyzer..."
+        curl -X POST https://uber-feedback-agent.vercel.app/api/analyze \
+          -H "Content-Type: application/json" \
+          -d @test_artifacts/payload.json \
+          > test_artifacts/ai_feedback.json
+        
+        # Check if the response is valid JSON
+        if jq -e . >/dev/null 2>&1 <<<"$(cat test_artifacts/ai_feedback.json)"; then
+          echo "Received valid JSON response from analyzer"
+          # Extract feedback from response
+          jq -r '.feedback' test_artifacts/ai_feedback.json > test_artifacts/ai_feedback.md
+        else
+          echo "Error: Received invalid JSON response from analyzer"
+          echo "Response content:"
+          cat test_artifacts/ai_feedback.json
+          echo "Using error message as feedback"
+          echo "Error: The analyzer service returned an invalid response" > test_artifacts/ai_feedback.md
         fi
         
+        # Display feedback in the log
+        echo "AI Analysis of Test Results:"
+        cat test_artifacts/ai_feedback.md
+        
     - name: Comment on PR with feedback 
-      if: env.status != '0' && github.event_name == 'pull_request'
+      if: github.event_name == 'pull_request'
       run: |
         # Check if feedback file exists
         if [ -f "test_artifacts/ai_feedback.md" ]; then
           # Read the feedback from file
           FEEDBACK=$(cat test_artifacts/ai_feedback.md)
           
+          # Determine the appropriate title based on test status
+          if [ "${{ env.status }}" == "0" ]; then
+            TITLE="AI Analysis of Test Results"
+          else
+            TITLE="AI Analysis of Test Failures"
+          fi
+          
           # Use GitHub REST API directly with curl
           curl -X POST \
             -H "Authorization: token ${{ github.token }}" \
             -H "Accept: application/vnd.github.v3+json" \
             https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
-            -d "{\"body\":\"# AI Analysis of Test Failures\n\n$FEEDBACK\"}"
+            -d "{\"body\":\"# $TITLE\n\n$FEEDBACK\"}"
         else
           echo "Warning: Feedback file not found"
         fi
