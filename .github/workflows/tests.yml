@@ -126,7 +126,7 @@ jobs:
     
     - name: Upload AI feedback as artifact
       if: env.status != '0'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: ai-feedback
         path: test_artifacts/ai_feedback.md
