@@ -75,10 +75,10 @@ jobs:
           echo "Tests failed with status $TEST_STATUS"
         fi
 
-    - name: Collect repository files and analyze tests
+    - name: DEBUG - Collect repository files and print context
       # Run this step for every job, regardless of test result
       run: |
-        echo "Generating AI feedback for test results..."
+        echo "=== DEBUG MODE: Collecting files and printing context ==="
         mkdir -p test_artifacts/repo_files
         
         # Create a function to collect Python files
@@ -92,14 +92,19 @@ jobs:
           fi
           
           echo "Collecting files from $dir"
+          files_count=$(find "$dir" -name "*.py" -type f -not -path "*/\.*" -not -path "*/__pycache__/*" | wc -l)
+          echo "Found $files_count Python files in $dir"
+          
           find "$dir" -name "*.py" -type f -not -path "*/\.*" -not -path "*/__pycache__/*" | while read file; do
             dest_file="test_artifacts/repo_files/$file"
             mkdir -p "$(dirname "$dest_file")"
             cp "$file" "$dest_file"
+            echo "  - Copied $file"
           done
         }
         
         # Collect files from each directory
+        echo "Collecting Python files from specified directories..."
         collect_dir_files "payments"
         collect_dir_files "ratings"
         collect_dir_files "riders"
@@ -107,11 +112,29 @@ jobs:
         collect_dir_files "drivers"
         
         # Copy individual files
-        cp main.py test_artifacts/repo_files/main.py
-        cp config.py test_artifacts/repo_files/config.py
+        echo "Copying main.py and config.py..."
+        if [ -f main.py ]; then
+          cp main.py test_artifacts/repo_files/main.py
+          echo "  - Copied main.py"
+        else
+          echo "  - WARNING: main.py not found"
+        fi
+        
+        if [ -f config.py ]; then
+          cp config.py test_artifacts/repo_files/config.py
+          echo "  - Copied config.py"
+        else
+          echo "  - WARNING: config.py not found"
+        fi
+        
+        # Print summary of collected files
+        echo "=== Collected Files Summary ==="
+        find test_artifacts/repo_files -type f | sort
+        echo "Total files: $(find test_artifacts/repo_files -type f | wc -l)"
         
         # Encode test results as base64 to preserve formatting
         TEST_RESULTS_BASE64=$(cat test_artifacts/test_results.txt | base64 -w 0)
+        echo "Test results encoded as base64 (first 100 chars): ${TEST_RESULTS_BASE64:0:100}..."
         
         # Create initial JSON payload with test results only
         cat > test_artifacts/payload.json << EOF
@@ -122,7 +145,7 @@ jobs:
         EOF
         
         # Add all repository files to payload
-        echo "Adding repository files to payload"
+        echo "Adding repository files to payload..."
         jq '.repo_files = {}' test_artifacts/payload.json > test_artifacts/payload_with_files.json
         
         find test_artifacts/repo_files -type f -name "*.py" | while read file; do
@@ -133,34 +156,46 @@ jobs:
           FILE_CONTENT=$(cat "$file" | jq -Rs .)
           jq --arg file "$rel_path" --arg content "$FILE_CONTENT" '.repo_files[$file] = $content' test_artifacts/payload_with_files.json > test_artifacts/payload_tmp.json
           mv test_artifacts/payload_tmp.json test_artifacts/payload_with_files.json
+          echo "  - Added $rel_path to payload"
         done
         
         mv test_artifacts/payload_with_files.json test_artifacts/payload.json
         
-        # Send to Vercel function and store results
-        echo "Sending test results to AI analyzer..."
-        curl -X POST https://uber-feedback-agent.vercel.app/api/analyze \
-          -H "Content-Type: application/json" \
-          -d @test_artifacts/payload.json \
-          > test_artifacts/ai_feedback.json
+        # Print summary of payload content
+        echo "=== Payload Content Summary ==="
+        echo "Payload size: $(wc -c < test_artifacts/payload.json) bytes"
+        echo "Number of files in payload: $(jq '.repo_files | keys | length' test_artifacts/payload.json)"
+        echo "Files included in payload:"
+        jq '.repo_files | keys' test_artifacts/payload.json
         
-        # Check if the response is valid JSON
-        if jq -e . >/dev/null 2>&1 <<<"$(cat test_artifacts/ai_feedback.json)"; then
-          echo "Received valid JSON response from analyzer"
-          # Extract feedback from response
-          jq -r '.feedback' test_artifacts/ai_feedback.json > test_artifacts/ai_feedback.md
-        else
-          echo "Error: Received invalid JSON response from analyzer"
-          echo "Response content:"
-          cat test_artifacts/ai_feedback.json
-          echo "Using error message as feedback"
-          echo "Error: The analyzer service returned an invalid response" > test_artifacts/ai_feedback.md
-        fi
+        # Print the first few characters of each file for verification
+        echo "=== Sample File Contents ==="
+        for file_path in $(jq -r '.repo_files | keys[]' test_artifacts/payload.json | head -3); do
+          echo "File: $file_path"
+          jq -r ".repo_files[\"$file_path\"]" test_artifacts/payload.json | head -5
+          echo "..."
+        done
         
-        # Display feedback in the log
-        echo "AI Analysis of Test Results:"
+        echo "=== DEBUG: API Call Would Send to: https://uber-feedback-agent.vercel.app/api/analyze ==="
+        echo "API call skipped for debugging purposes"
+        
+        # Create a mock response for testing
+        cat > test_artifacts/ai_feedback.md << EOF
+        ## DEBUG MODE: API Call Skipped
+
+        This is a placeholder feedback message for debugging purposes.
+        
+        The payload was successfully prepared with:
+        - Test results (encoded in base64)
+        - $(jq '.repo_files | keys | length' test_artifacts/payload.json) Python files from your repository
+        
+        In normal operation, this would be replaced with AI-generated feedback about your tests.
+        EOF
+        
+        # Display mock feedback
+        echo "=== DEBUG: Mock AI Analysis (API call skipped) ==="
         cat test_artifacts/ai_feedback.md
-        
+
     - name: Comment on PR with feedback 
       if: github.event_name == 'pull_request'
       run: |
