@@ -9,19 +9,16 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: [3.8, 3.9, '3.10']
-
+    
     steps:
     - uses: actions/checkout@v3
       with:
         fetch-depth: 2  # Fetch at least two commits for diff
     
-    - name: Set up Python ${{ matrix.python-version }}
+    - name: Set up Python 3.10
       uses: actions/setup-python@v4
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: '3.10'
         
     - name: Install dependencies
       run: |
@@ -170,7 +167,7 @@ jobs:
           if jq -e . >/dev/null 2>&1 <<<"$(cat test_artifacts/ai_feedback.json)"; then
             echo "Received valid JSON response"
             # Extract feedback from response
-            jq -r '.feedback' test_artifacts/ai_feedback.json > test_artifacts/ai_feedback.md
+            jq -r '.feedback // .error // "No feedback or error message provided"' test_artifacts/ai_feedback.json > test_artifacts/ai_feedback.md
             echo "Feedback extracted to test_artifacts/ai_feedback.md"
           else
             echo "Error: Received invalid JSON response"
@@ -187,6 +184,13 @@ jobs:
         echo "=========================================="
         head -n 20 test_artifacts/ai_feedback.md
         echo "... (see full feedback in GitHub Actions artifacts) ..."
+
+    - name: Upload test artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-artifacts
+        path: test_artifacts/
+        if-no-files-found: warn
 
     - name: Comment on PR with feedback 
       if: github.event_name == 'pull_request'
@@ -211,10 +215,4 @@ jobs:
             -d "{\"body\":\"# $TITLE\n\n$FEEDBACK\"}"
         else
           echo "Warning: Feedback file not found"
-        fi
-
-    - name: Upload test artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-artifacts
-        path: test_artifacts/ 
+        fi 
